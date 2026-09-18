@@ -35,10 +35,9 @@
 | Rust + Python (windows-latest) | ✓ | 5m32s |
 | Rust + Python (ubuntu-latest) | ✓ | 2m27s |
 
-Tras el merge a `main`, el workflow vuelve a correr sobre `main` (mismo YAML,
-mismos gates): **run `35388366114` VERDE en `main`** (C++ Windows 55s, C++
-Linux 29s, Rust+Python Windows/Linux ✓) — el checkmark verde visible en la
-página del repo.
+Corridas VERDES posteriores sobre `main` (mismo YAML, mismos gates):
+`35388366114`, `35392017320` y la última sobre el historial final de `main`
+(ver checkmark en la página del repo, pestaña Actions).
 
 ## Archivos de evidencia
 
