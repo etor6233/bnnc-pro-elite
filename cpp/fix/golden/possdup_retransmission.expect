@@ -1,0 +1,16 @@
+# spec=MARKET_MICROSTRUCTURE §5.5: same MsgSeqNum + PossDup=Y
+# wire_len=120
+tag8=FIX.4.4
+tag11=ord-0000
+tag34=3
+tag35=D
+tag38=50
+tag40=1
+tag43=Y
+tag49=CLIENT
+tag52=20260918-09:30:00.000
+tag54=1
+tag55=BTCUSDT
+tag56=VENUE
+tag9=98
+tag10=119

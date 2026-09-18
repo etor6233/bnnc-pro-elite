@@ -1,0 +1,19 @@
+# spec=stream_1_0.xml DepthSnapshotStreamEvent id=10002
+template_id=10002
+schema_id=1
+version=0
+event_time_us=1726700000200000
+book_update_id=900000100
+price_exponent=-2
+qty_exponent=-5
+bid_count=2
+bid0_price_mantissa=5978655
+bid0_qty_mantissa=150000
+bid1_price_mantissa=5978600
+bid1_qty_mantissa=220000
+ask_count=2
+ask0_price_mantissa=5978700
+ask0_qty_mantissa=80000
+ask1_price_mantissa=5978800
+ask1_qty_mantissa=60000
+symbol=BTCUSDT

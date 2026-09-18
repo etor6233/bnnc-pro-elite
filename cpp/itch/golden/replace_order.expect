@@ -1,0 +1,10 @@
+# spec=ITCH 1.4.5
+# wire_len=35
+type=U
+locate=3000
+tracking=16
+timestamp_ns=34200000009000
+original_order_ref=100000
+new_order_ref=100100
+shares=75
+price=48010000

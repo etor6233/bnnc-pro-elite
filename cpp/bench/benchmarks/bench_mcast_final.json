@@ -1,0 +1,16 @@
+{
+  "benchmark": "multicast_publish",
+  "mode": "final",
+  "datagrams_per_rep": 2000000,
+  "repetitions": 5,
+  "batch_size": 100,
+  "datagram_bytes": 29,
+  "p50_ns": 2682,
+  "p99_ns": 95146,
+  "mean_ns": 5093.2,
+  "min_ns": 1644,
+  "max_ns": 821502,
+  "throughput_dgram_per_s": 203376,
+  "anti_cheat": "fresh encode per iteration; volatile sink; no memoization",
+  "measured_on": "MSVC cl 14.50 /O2, Windows x64, loopback multicast"
+}

@@ -1,0 +1,10 @@
+# spec=MARKET_MICROSTRUCTURE §5.5 + QuickFIX layout
+# wire_len=76
+tag8=FIX.4.4
+tag34=2
+tag35=0
+tag49=CLIENT
+tag52=20260918-09:30:00.000
+tag56=VENUE
+tag9=54
+tag10=016

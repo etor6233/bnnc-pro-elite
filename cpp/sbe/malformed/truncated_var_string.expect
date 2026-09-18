@@ -1,0 +1,2 @@
+# why=varString8 length byte claims more bytes than the buffer holds
+status=Truncated

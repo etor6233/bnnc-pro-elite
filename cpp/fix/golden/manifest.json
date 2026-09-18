@@ -1,0 +1,3 @@
+{
+  "note": "Golden FIX vectors constructed byte-by-byte from the annotated FIX session semantics and the standard header/trailer layout (QuickFIX canonical reference); citations per vector."
+}

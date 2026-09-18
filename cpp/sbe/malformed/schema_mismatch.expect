@@ -1,0 +1,2 @@
+# why=schemaId 2 != pinned schemaId 1
+status=SchemaMismatch

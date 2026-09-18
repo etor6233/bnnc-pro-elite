@@ -1,0 +1,10 @@
+# spec=OUCH 3.6
+# wire_len=36
+type=E
+timestamp_ns=34200000003000
+user_ref_num=6
+quantity=100
+price=9510000
+liquidity_flag=R
+match_number=888
+appendage_len=0

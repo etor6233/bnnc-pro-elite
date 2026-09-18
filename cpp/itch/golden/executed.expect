@@ -1,0 +1,9 @@
+# spec=ITCH 1.4.1
+# wire_len=31
+type=E
+locate=3000
+tracking=11
+timestamp_ns=34200000004000
+order_ref=100000
+executed_shares=40
+match_number=2500

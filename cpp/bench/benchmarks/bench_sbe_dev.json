@@ -1,0 +1,16 @@
+{
+  "benchmark": "sbe_decode",
+  "mode": "dev",
+  "iterations_per_rep": 300000,
+  "repetitions": 3,
+  "batch_size": 1000,
+  "corpus": "official-encoder golden vectors (sbe/golden)",
+  "p50_ns": 82,
+  "p99_ns": 92,
+  "mean_ns": 82.2978,
+  "min_ns": 81,
+  "max_ns": 114,
+  "throughput_msg_per_s": 1.209e+07,
+  "anti_cheat": "fresh Decoded per iteration; volatile sink; no memoization",
+  "measured_on": "MSVC cl 14.50 /O2, Windows x64"
+}

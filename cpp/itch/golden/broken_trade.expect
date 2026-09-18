@@ -1,0 +1,7 @@
+# spec=ITCH 1.5.3
+# wire_len=19
+type=B
+locate=3000
+tracking=19
+timestamp_ns=34200000012000
+match_number=2500

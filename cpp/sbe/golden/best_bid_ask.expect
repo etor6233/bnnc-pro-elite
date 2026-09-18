@@ -1,0 +1,17 @@
+# spec=stream_1_0.xml BestBidAskStreamEvent id=10001
+template_id=10001
+schema_id=1
+version=0
+event_time_us=1726700000100000
+book_update_id=900000001
+price_exponent=-2
+qty_exponent=-5
+bid_price_mantissa=5978655
+bid_price_decimal=59786.55
+bid_qty_mantissa=150000
+bid_qty_decimal=1.50000
+ask_price_mantissa=5978700
+ask_price_decimal=59787.00
+ask_qty_mantissa=80000
+ask_qty_decimal=0.80000
+symbol=ETHUSDT

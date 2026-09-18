@@ -1,0 +1,12 @@
+# spec=ITCH 1.5.1
+# wire_len=44
+type=P
+locate=3000
+tracking=17
+timestamp_ns=34200000010000
+order_ref=0
+side=B
+shares=300
+stock=TSLA
+price=210505000
+match_number=999999

@@ -1,0 +1,7 @@
+# spec=ITCH 1.1 + event codes p.5
+# wire_len=12
+type=S
+locate=0
+tracking=43
+timestamp_ns=57600000000000
+event_code=C

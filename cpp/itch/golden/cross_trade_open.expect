@@ -1,0 +1,11 @@
+# spec=ITCH 1.5.2
+# wire_len=40
+type=Q
+locate=3000
+tracking=18
+timestamp_ns=34200000011000
+shares=5000
+stock=AAPL
+cross_price=48022500
+match_number=2501
+cross_type=O

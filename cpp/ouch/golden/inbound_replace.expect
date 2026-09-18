@@ -1,0 +1,12 @@
+# spec=OUCH 2.2
+# wire_len=40
+type=U
+orig_user_ref_num=5
+user_ref_num=6
+quantity=600
+price=9510000
+time_in_force=0
+display=Y
+intermkt_sweep=N
+cl_ord_id=clid-002
+appendage_len=0

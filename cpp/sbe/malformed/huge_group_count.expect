@@ -1,0 +1,2 @@
+# why=numInGroup=1000000 cannot fit in the buffer
+status=Truncated

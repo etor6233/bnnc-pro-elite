@@ -1,0 +1,16 @@
+# spec=MARKET_MICROSTRUCTURE §5.5 + QuickFIX layout
+# wire_len=129
+tag8=FIX.4.4
+tag11=ord-0001
+tag34=6
+tag35=D
+tag38=100
+tag40=1
+tag44=59786.55
+tag49=CLIENT
+tag52=20260918-09:30:00.000
+tag54=1
+tag55=BTCUSDT
+tag56=VENUE
+tag9=106
+tag10=032

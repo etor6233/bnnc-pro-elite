@@ -1,0 +1,5 @@
+{
+  "source_pdf": "external-review/low-latency-reference/nasdaq-specs/NQTVITCHSpecification.pdf",
+  "source_sha256": "45E0531D1B4B3BEB886E9618B2AB824A5AA9BDA3A99C0DFF03509306E68AACC3",
+  "note": "Golden vectors constructed byte-by-byte from the captured spec field tables; section citations per vector."
+}

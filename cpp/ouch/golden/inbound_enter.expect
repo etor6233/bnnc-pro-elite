@@ -1,0 +1,15 @@
+# spec=OUCH 2.1
+# wire_len=47
+type=O
+user_ref_num=5
+side=B
+quantity=500
+symbol=NVDA
+price=9505000
+time_in_force=0
+display=Y
+capacity=A
+intermkt_sweep=N
+cross_type=N
+cl_ord_id=clid-001
+appendage_len=0

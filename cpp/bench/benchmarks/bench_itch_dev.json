@@ -1,0 +1,16 @@
+{
+  "benchmark": "itch_decode",
+  "mode": "dev",
+  "iterations_per_rep": 300000,
+  "repetitions": 3,
+  "batch_size": 1000,
+  "corpus": "spec-derived golden vectors (itch/golden)",
+  "p50_ns": 16,
+  "p99_ns": 18,
+  "mean_ns": 16.1522,
+  "min_ns": 16,
+  "max_ns": 27,
+  "throughput_msg_per_s": 6.00793e+07,
+  "anti_cheat": "fresh Decoded per iteration; volatile sink; no memoization",
+  "measured_on": "MSVC cl 14.50 /O2, Windows x64"
+}

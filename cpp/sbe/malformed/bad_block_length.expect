@@ -1,0 +1,2 @@
+# why=blockLength 0 is smaller than the BestBidAskStreamEvent root fields
+status=InvalidLayout

@@ -1,0 +1,7 @@
+# spec=ITCH 1.4.4
+# wire_len=19
+type=D
+locate=3000
+tracking=15
+timestamp_ns=34200000008000
+order_ref=100001

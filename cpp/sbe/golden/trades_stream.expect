@@ -1,0 +1,24 @@
+# spec=stream_1_0.xml TradesStreamEvent id=10000 + sbe-market-data-streams.md
+template_id=10000
+schema_id=1
+version=0
+event_time_us=1726700000000000
+transact_time_us=1726700000012345
+price_exponent=-2
+qty_exponent=-5
+trade_count=2
+trade0_id=700000001
+trade0_price_mantissa=5978655
+trade0_price_decimal=59786.55
+trade0_qty_mantissa=12345
+trade0_qty_decimal=0.12345
+trade0_buyer_maker=1
+trade0_best_match=1
+trade1_id=700000002
+trade1_price_mantissa=5978700
+trade1_price_decimal=59787.00
+trade1_qty_mantissa=7000
+trade1_qty_decimal=0.07000
+trade1_buyer_maker=0
+trade1_best_match=1
+symbol=BTCUSDT

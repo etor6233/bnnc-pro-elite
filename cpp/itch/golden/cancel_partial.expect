@@ -1,0 +1,8 @@
+# spec=ITCH 1.4.3
+# wire_len=23
+type=X
+locate=3000
+tracking=14
+timestamp_ns=34200000007000
+order_ref=100000
+cancelled_shares=25

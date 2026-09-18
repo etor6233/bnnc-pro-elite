@@ -1,0 +1,2 @@
+# why=0 bytes: shorter than the 8-byte message header
+status=Truncated

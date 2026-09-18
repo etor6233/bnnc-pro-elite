@@ -1,0 +1,11 @@
+# spec=ITCH 1.3.1
+# wire_len=36
+type=A
+locate=3000
+tracking=7
+timestamp_ns=34200000123456
+order_ref=100000
+side=B
+shares=100
+stock=AAPL
+price=48000000

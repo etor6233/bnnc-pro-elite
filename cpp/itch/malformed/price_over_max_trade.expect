@@ -1,0 +1,2 @@
+# why=price overflow in Trade (Non-Cross), spec max p.4
+status=PriceOutOfRange

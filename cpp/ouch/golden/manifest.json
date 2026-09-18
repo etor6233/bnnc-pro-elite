@@ -1,0 +1,5 @@
+{
+  "source_pdf": "external-review/low-latency-reference/nasdaq-specs/OUCH5.0.pdf",
+  "source_sha256": "770253DE8B257AB68700AB5DBF179F806D890890683BF695AB8257585D8C2C00",
+  "note": "Golden vectors constructed byte-by-byte from the captured spec field tables; section citations per vector."
+}

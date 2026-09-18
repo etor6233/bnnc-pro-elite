@@ -1,0 +1,12 @@
+# spec=ITCH 1.3.2
+# wire_len=40
+type=F
+locate=3000
+tracking=10
+timestamp_ns=34200000003000
+order_ref=100003
+side=B
+shares=500
+stock=NVDA
+price=9505000
+attribution=NSDQ

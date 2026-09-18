@@ -1,0 +1,2 @@
+# why=trades group blockLength 10 < 25 (schema layout)
+status=InvalidLayout

@@ -1,0 +1,8 @@
+# spec=OUCH 3.8 + Appendix D
+# wire_len=31
+type=J
+timestamp_ns=34200000004000
+user_ref_num=7
+reason=102
+cl_ord_id=clid-003
+appendage_len=0

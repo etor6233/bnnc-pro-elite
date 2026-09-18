@@ -1,0 +1,16 @@
+# spec=stream_1_0.xml DepthDiffStreamEvent id=10003
+template_id=10003
+schema_id=1
+version=0
+event_time_us=1726700000300000
+first_update_id=900000101
+last_update_id=900000101
+price_exponent=-2
+qty_exponent=-5
+bid_count=1
+bid0_price_mantissa=5978655
+bid0_qty_mantissa=0
+ask_count=1
+ask0_price_mantissa=5978900
+ask0_qty_mantissa=5000
+symbol=BTCUSDT

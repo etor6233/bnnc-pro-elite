@@ -1,0 +1,11 @@
+# spec=ITCH 1.3.1
+# wire_len=36
+type=A
+locate=3000
+tracking=8
+timestamp_ns=34200000999999
+order_ref=100001
+side=S
+shares=250
+stock=MSFT
+price=4102500

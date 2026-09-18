@@ -1,0 +1,8 @@
+# spec=OUCH 3.4
+# wire_len=20
+type=C
+timestamp_ns=34200000002000
+user_ref_num=6
+quantity=300
+reason=U
+appendage_len=0

@@ -1,0 +1,9 @@
+# spec=ITCH 1.2.2 + Appendix C
+# wire_len=25
+type=H
+locate=3000
+tracking=20
+timestamp_ns=34200000013000
+stock=AAPL
+trading_state=T
+reason=T12
