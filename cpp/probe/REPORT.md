@@ -26,19 +26,19 @@ congelados.
 
 ## Resultados medidos (report.json)
 
-| Métrica | Valor medido |
-|---|---|
-| Reloj local vs venue (offset mediano) | +30,6 ms (local adelantado) |
-| RTT REST mediano (`/api/v3/time` ×12) | 371,2 ms |
-| RTT WebSocket ping/pong | 388,3 ms (3 muestras: 396,8 / 400,2 / 368) |
-| **Depth BTCUSDT@100ms: delay p50** | **119,9 ms** |
-| Depth: delay p99 / mean / max | 131,0 / 121,3 / 386,2 ms |
-| Depth: inter-arrival p50 / p99 | 99,99 / 110,2 ms (cadencia 100 ms verificada) |
-| **Trade BTCUSDT: delay p50** | **124,6 ms** |
-| Trade: delay p99 / mean / max | 450,0 / 131,8 / 451,0 ms |
-| Trade: inter-arrival p50 / p99 | 4,3 µs / 1,05 s (ráfagas) |
-| Muestras | 1785 depth + 3726 trades (180 s) |
-| Incertidumbre del delay (reloj) | ±185,6 ms |
+| Métrica | 1ª corrida (20:28Z) | 2ª corrida (21:5xZ) |
+|---|---|---|
+| RTT REST mediano (`/api/v3/time` ×12) | 371,2 ms | 387,1 ms |
+| **Depth BTCUSDT@100ms: delay p50** | **119,9 ms** | **120,3 ms** |
+| Depth: delay p99 / mean / max | 131,0 / 121,3 / 386,2 ms | 133,1 / 121,6 / 282,8 ms |
+| Depth: inter-arrival p50 / p99 | 99,99 / 110,2 ms | 100,01 / 112,4 ms |
+| **Trade BTCUSDT: delay p50** | **124,6 ms** | **123,0 ms** |
+| Trade: delay p99 / mean / max | 450,0 / 131,8 / 451,0 ms | 228,0 / 126,7 / 289,7 ms |
+| Muestras | 1785 depth + 3726 trades | 1786 depth + 2244 trades |
+| Incertidumbre del delay (reloj) | ±185,6 ms | ±193,5 ms |
+
+Dos corridas independientes: p50 de depth 119,9 vs 120,3 ms y de trades
+124,6 vs 123,0 ms — estable.
 
 ## Lectura honesta
 

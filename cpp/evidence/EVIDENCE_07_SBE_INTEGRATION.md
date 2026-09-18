@@ -64,3 +64,8 @@ feature/model gates" ‚Äî despu√©s de los gates 1-7 del JSON.
 - **PROMOVER SBE a camino can√≥nico**: aplazado hasta que el gate de endurance
   del JSON pase y se complete la secuencia de promoci√≥n (comparaci√≥n
   sem√°ntica exacta, medici√≥n, recovery, decisi√≥n expl√≠cita).
+
+Criterios medibles de aceptaciÛn de una corrida (cadencia real, cero
+corrupciÛn, journal Ìntegro, delay punta a punta, igualdad sem·ntica vs JSON
+en ventana solapada, rotaciÛn 23 h): \cpp/sbe-lane/RUNBOOK_SBE_LANE.md\
+secciÛn "CÛmo decidimos si la corrida es perfecta".

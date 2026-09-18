@@ -18,6 +18,7 @@ import hashlib
 import json
 import os
 import pathlib
+import statistics
 import subprocess
 import sys
 import threading
@@ -165,6 +166,50 @@ class SbeLaneTests(unittest.TestCase):
             self.assertEqual(len(lines), 3)
             ids = [l["template_id"] for l in lines]
             self.assertEqual(ids, [10000, 10003, 10001])
+            # Per-frame end-to-end telemetry: venue event_time_us extracted
+            # from every frame (first schema field, offset 8) + local recv.
+            tel = [
+                json.loads(l)
+                for l in (out / "sbe-telemetry.jsonl").read_text().splitlines()
+                if l.strip()
+            ]
+            self.assertEqual(len(tel), 3)
+            self.assertEqual(tel[0]["event_time_us"], 1726700000000000)
+            self.assertEqual(tel[1]["event_time_us"], 1726700000300000)
+            self.assertEqual(tel[2]["event_time_us"], 1726700000100000)
+
+    def test_measure_script_math_deterministic(self):
+        # Synthetic telemetry with a known clock offset: the wire-leg delays
+        # must be computed exactly (recv - event - offset).
+        with tempdir() as tmp:
+            out = tmp / "lane"
+            out.mkdir(parents=True)
+            rows = [
+                {"index": 0, "template_id": 10000,
+                 "event_time_us": 1726700000000000,
+                 "recv_wall_ms": 1726700000010, "recv_monotonic_ns": 0},
+                {"index": 1, "template_id": 10000,
+                 "event_time_us": 1726700000000000,
+                 "recv_wall_ms": 1726700000015, "recv_monotonic_ns": 0},
+            ]
+            (out / "sbe-telemetry.jsonl").write_text(
+                "\n".join(json.dumps(r) for r in rows) + "\n", encoding="utf-8")
+            # offset = 5 ms -> delays = 10-0-5=5 and 15-0-5=10; nearest-rank
+            # p50 over two samples picks the upper median -> 10.0
+            meas = subprocess.run(
+                [sys.executable, str(LANE_DIR / "measure_sbe_lane.py"),
+                 "--dir", str(out), "--offset", "5",
+                 "--out", str(out / "measure.json")],
+                capture_output=True, text=True, timeout=60,
+            )
+            self.assertEqual(meas.returncode, 0, meas.stderr)
+            report = json.loads((out / "measure.json").read_text())
+            self.assertEqual(report["frames"], 2)
+            self.assertEqual(report["wire_leg"]["10000"]["delay_ms_p50"], 10.0)
+            self.assertEqual(
+                report["wire_leg"]["10000"]["delay_ms_mean"], 7.5)
+            self.assertEqual(
+                report["wire_leg"]["10000"]["inter_arrival_ms_p50"], 5.0)
 
     def test_ping_pong_and_server_shutdown_typed(self):
         frames = [_golden_bytes("depth_diff.bin")]

@@ -94,6 +94,23 @@ class Lane:
             fh.write(len(frame).to_bytes(4, "little"))
             fh.write(frame)
         self.frame_count += 1
+        # Per-frame end-to-end telemetry: venue event time is the first field
+        # (eventTime, int64 microseconds at offset 8 of every message in the
+        # pinned schema) -> wire leg measurable without a decoder.
+        tpl = template_id(frame)
+        event_us = 0
+        if len(frame) >= 16:
+            event_us = int.from_bytes(frame[8:16], "little")
+        row = {
+            "index": self.frame_count - 1,
+            "template_id": tpl,
+            "event_time_us": event_us,
+            "recv_wall_ms": int(time.time() * 1000),
+            "recv_monotonic_ns": time.perf_counter_ns(),
+        }
+        with (self.out / "sbe-telemetry.jsonl").open("a", encoding="utf-8",
+                                                     newline="\n") as fh:
+            fh.write(json.dumps(row, sort_keys=True, separators=(",", ":")) + "\n")
         return _sha256(frame)
 
     async def run_connection(self, url: str, duration_s: float) -> str | None:
