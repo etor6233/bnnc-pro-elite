@@ -86,3 +86,11 @@ jobs:
         run: |
           set -e
           bash cpp/build.sh all
+
+      - name: SBE lane tests (mock server + decode CLI)
+        shell: bash
+        run: |
+          set -e
+          python -m pip install "websockets==17.0.1"
+          export PYTHONPATH="$PWD/cpp/sbe-lane"
+          python -m unittest discover -s cpp/sbe-lane/tests -v

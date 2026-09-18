@@ -91,6 +91,11 @@ build_fix() {
     "$BIN/test_fix" "$ROOT"
 }
 
+build_sbelane() {
+    compile "$BIN/sbe_decode_cli" -I"$ROOT/sbe/include" \
+        "$ROOT/sbe-lane/sbe_decode_cli.cpp" "$ROOT/sbe/src/binance_sbe.cpp"
+}
+
 case "$PHASE" in
     itch) build_itch ;;
     sbe) build_sbe ;;
@@ -99,6 +104,7 @@ case "$PHASE" in
     recovery) build_recovery ;;
     resilience) build_resilience ;;
     fix) build_fix ;;
+    sbelane) build_sbelane ;;
     all)
         build_itch
         build_sbe
@@ -107,6 +113,7 @@ case "$PHASE" in
         build_recovery
         build_resilience
         build_fix
+        build_sbelane
         ;;
     *)
         echo "unknown phase: $PHASE" >&2

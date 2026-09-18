@@ -1,8 +1,26 @@
-# EVIDENCIA — FASE 7: Integración SBE según política (decisión documentada)
+# EVIDENCIA — FASE 7: Integración SBE según política
 
-**Estado: APLAZAMIENTO DOCUMENTADO (permitido por el mandato §4: "integración
-SBE respetando la política (o decisión documentada de aplazamiento)").**
-Fecha: 2026-09-18.
+**Estado: LANE EJECUTABLE como candidata paralela; PROMOCIÓN aplazada por
+política (permitido por el mandato §4: "decisión documentada de
+aplazamiento").** Fecha: 2026-09-18.
+
+## Lo nuevo (2026-09-18, tarde): la lane corre — solo falta la key
+
+- `cpp/sbe-lane/sbe_lane.py`: captura SBE con epochs PROPIOS (nunca fusiona
+  con JSON), journal hash-chain (SHA-256), huecos TIPADOS entre conexiones
+  (`GAP_TYPED` con rango de pared exacto), `serverShutdown` tipado,
+  rotación preventiva a 23 h, key Ed25519 via header `X-MBX-APIKEY` (nunca se
+  escribe en disco).
+- `cpp/sbe-lane/sbe_decode_cli.cpp`: CLI de verificación que decodifica los
+  frames capturados con el decoder FASE 2 (schema pineado `6EA32846…`).
+- Tests rojo→verde `cpp/sbe-lane/tests/test_sbe_lane.py`: **3/3 verdes** contra
+  un servidor mock local que sirve los golden del encoder oficial —
+  (1) captura byte-idéntica + journal válido + decode CLI exacto
+  (template ids 10000/10003/10001), (2) ping→pong + `serverShutdown` tipado,
+  (3) reconexión con `GAP_TYPED`. Sin key real: el único bloqueo externo para
+  correr en vivo es la key Ed25519.
+- Runbook: `cpp/sbe-lane/RUNBOOK_SBE_LANE.md` (compilar, probar, correr en
+  vivo, verificar). CI: la suite de la lane corre en Linux+Windows.
 
 ## La política aplicable
 
@@ -23,30 +41,26 @@ feature/model gates" — después de los gates 1-7 del JSON.
 
 | Precondición de la política | Estado observado | Consecuencia |
 |---|---|---|
-| JSON collector continuo con gates pasados (ítems 1-7) | El servicio productivo `hrs-5971e1d2cb41` (soak 24 h) está CORRIENDO; el gate de endurance aún no está aceptado | SBE no puede promocionarse todavía |
-| Clave Ed25519 market-data-only separada | El usuario no la proveyó (la spec SBE oficial exige API key Ed25519 en header `X-MBX-APIKEY`) | No se puede abrir una lane SBE real |
-| JSON y SBE con epochs/versiones de dataset independientes | Diseñado y documentado (ver abajo) | Listo para cuando se active |
-| Comparación semántica exacta, medición de latencia/CPU, tests de recuperación | COMPLETADOS en este proyecto: decoder FASE 2 con cross-check contra el codec oficial, benchmarks FASE 5 (83 ns p50), recovery FASE 3-B/3-C | Pre-condiciones técnicas cubiertas |
+| JSON collector continuo con gates pasados (ítems 1-7) | El servicio productivo `hrs-5971e1d2cb41` (soak 24 h) está CORRIENDO; el gate de endurance aún no está aceptado | La PROMOCIÓN de SBE sigue aplazada |
+| Clave Ed25519 market-data-only separada | El usuario no la proveyó (la spec SBE oficial exige API key Ed25519 en header `X-MBX-APIKEY`) | Único bloqueo para CORRER la lane en vivo |
+| JSON y SBE con epochs/versiones de dataset independientes | Implementado: `cpp/sbe-lane/` escribe epochs propios (`sbe-…`) y nunca toca los árboles JSON | Cumplido por construcción |
+| Comparación semántica exacta, medición de latencia/CPU, tests de recuperación | COMPLETADOS: decoder FASE 2 cross-check oficial, benchmarks FASE 5 (83 ns p50), recovery FASE 3-B/3-C, lane 3/3 vs mock | Pre-condiciones técnicas cubiertas |
 
 ## Qué SÍ está listo (y dónde está la evidencia)
 
 - Decoder SBE del schema pineado con golden del encoder oficial: `cpp/sbe/`
   (EVIDENCE_02_SBE.md).
-- Lane SBE con epochs independientes del JSON: el diseño de captura por capas
-  `cpp/resilience/` ya trata cada camino como lane independiente con
-  procedencia propia (EVIDENCE_03C_RESILIENCE.md); la política de "epochs
-  separadas" se refleja en la ausencia total de código que fusione epochs
-  JSON/SBE.
+- **Lane SBE ejecutable**: `cpp/sbe-lane/` con captura, journal tipado,
+  verificación CLI y 3/3 tests verdes contra mock local
+  (`cpp/sbe-lane/RUNBOOK_SBE_LANE.md`).
 - Benchmarks de decode SBE (FASE 5) y recovery SBE→libro (FASE 3-B).
 
 ## Decisión
 
-**Aplazar la integración SBE a la captura productiva** hasta que (a) el gate de
-endurance del JSON pase, y (b) el usuario provea la clave Ed25519
-market-data-only. Mientras tanto: JSON y SBE NO fusionan epochs en ningún
-punto del código nuevo (verificado por diseño y por la ausencia de cualquier
-acoplamiento entre `sbe/` y `binance_lob` en el árbol nuevo).
-
-Sin llaves, sin datos live del venue y con el gate JSON abierto, encender una
-lane SBE violaría la política; documentarlo es el resultado correcto y es el
-que exige el mandato para esta fase.
+- **CORRER la lane**: habilitado en cuanto exista la key Ed25519
+  market-data-only (comando exacto en `RUNBOOK_SBE_LANE.md`). La lane corre
+  como candidata paralela con epochs independientes — eso es exactamente lo
+  que permite la política.
+- **PROMOVER SBE a camino canónico**: aplazado hasta que el gate de endurance
+  del JSON pase y se complete la secuencia de promoción (comparación
+  semántica exacta, medición, recovery, decisión explícita).

@@ -124,9 +124,16 @@ $phases = @{
         Output = "$BinDir\test_fix_session.exe";
         IncludeDirs = @("$Root\fix\include");
     }
+    sbelane = @{
+        Tools = @();
+        Sources = @("$Root\sbe-lane\sbe_decode_cli.cpp", "$Root\sbe\src\binance_sbe.cpp");
+        Output = "$BinDir\sbe_decode_cli.exe";
+        IncludeDirs = @("$Root\sbe\include");
+        NoTest = $true;
+    }
 }
 
-if ($Phase -eq "all") { $names = @("itch", "sbe", "ouch", "net", "recovery", "resilience", "fix") }
+if ($Phase -eq "all") { $names = @("itch", "sbe", "ouch", "net", "recovery", "resilience", "fix", "sbelane") }
 else { $names = @($Phase) }
 
 foreach ($n in $names) {
@@ -142,7 +149,9 @@ foreach ($n in $names) {
     foreach ($t in $ph.Tools) { New-Goldens -Tool $t -PhaseName $n }
     if ($ph.Sources.Count -gt 0) {
         Invoke-ClBuild -Sources $ph.Sources -Output $ph.Output -ExtraLibs $ph.Libs -IncludeDirs $ph.IncludeDirs
-        Invoke-Test -Exe $ph.Output -PhaseName $n
+        if (-not $ph.NoTest) {
+            Invoke-Test -Exe $ph.Output -PhaseName $n
+        }
     }
 }
 
