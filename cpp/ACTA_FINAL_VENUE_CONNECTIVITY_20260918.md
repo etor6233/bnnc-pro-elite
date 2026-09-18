@@ -77,4 +77,26 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File cpp\bench\run_benchmarks
   (tras el push del grafo/probe), servicio productivo vivo y escribiendo
   (10 procesos, journals recientes), scan de secretos/rutas = 0.
 
+## Addendum 2 (misma noche): parse error del grafo corregido + lane SBE ejecutable
+
+- GitHub reportaba "Unable to render rich display / Parse error on line 25"
+  en el subgrafo `Venue-connectivity layer (cpp/, 2026-09-18)`: el título con
+  `( ) , /` rompía el parser de Mermaid. Corregido (título entre comillas +
+  labels saneados) y VERIFICADO con `mermaid.parse()` y render SVG completo
+  (mermaid 11.17.2): los 3 bloques mermaid del repo (README ×2, ROADMAP ×1)
+  parsean y renderizan sin errores (SVGs de 20–46 KB). Push `9db25b7`, CI
+  verde.
+- Lane SBE ejecutable (`cpp/sbe-lane/`): captura con epochs propios, journal
+  hash-chain con huecos TIPADOS, `serverShutdown` tipado, rotación 23 h,
+  CLI de verificación con el decoder FASE 2. **3/3 tests verdes** contra
+  servidor mock local (captura byte-idéntica + decode CLI, ping→pong +
+  shutdown tipado, reconexión con GAP_TYPED). Único bloqueo para correr en
+  vivo: la key Ed25519 market-data-only. Runbook:
+  `cpp/sbe-lane/RUNBOOK_SBE_LANE.md`; CI actualizado corre la suite en
+  Linux+Windows (runs verdes `35400139851`, `35401956233`).
+- Estado del soak de la parte 1 al momento del addendum (lectura del run
+  vivo): ~19,9 h de 24 h (elapsed 71.476 s), journal hash-chain avanzando,
+  reloj NTP sano, 16-18 procesos activos — el gate de endurance sigue
+  ABIERTO hasta su aceptación formal.
+
 Firmado por el agente ejecutor — 2026-09-18.
