@@ -1,4 +1,4 @@
-# Network Observability Runbook
+﻿# Network Observability Runbook
 
 Run all commands from the repository root. These procedures collect evidence;
 they do not start trading and require no Binance API key.
@@ -8,7 +8,7 @@ they do not start trading and require no Binance API key.
 Create a fresh evidence parent and run a bounded witness:
 
 ```powershell
-Set-Location -LiteralPath "C:\Users\NL\Desktop\NEW BINANCE\Binance"
+Set-Location -LiteralPath "<WORKSPACE>\Binance"
 $id = "witness-" + [Guid]::NewGuid().ToString("N").Substring(0, 12)
 $base = Join-Path (Get-Location) "artifacts\network-witness"
 New-Item -ItemType Directory -Path $base -Force | Out-Null
@@ -25,7 +25,7 @@ local-host reachability classification.
 Open one PowerShell as Administrator, then run the smoke:
 
 ```powershell
-Set-Location -LiteralPath "C:\Users\NL\Desktop\NEW BINANCE\Binance"
+Set-Location -LiteralPath "<WORKSPACE>\Binance"
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File ".\scripts\_network_trace_smoke.ps1"
 ```
 

@@ -1,4 +1,4 @@
-# Seven-day continuous raw qualification
+﻿# Seven-day continuous raw qualification
 
 This runbook governs the first `CONTINUOUS_DATASET` release gate after an exact
 `ENDURANCE_24H` pass. It captures public Binance Spot `BTCUSDT` and `ETHUSDT`
@@ -38,7 +38,7 @@ edits are outside the campaign execution boundary.
 From an elevated, operator-owned 64-bit Windows PowerShell:
 
 ```powershell
-Set-Location -LiteralPath "C:\Users\NL\Desktop\NEW BINANCE\Binance"
+Set-Location -LiteralPath "<WORKSPACE>\Binance"
 
 powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass `
   -File ".\scripts\run_24h_raw_qualification.ps1" `

@@ -1,7 +1,7 @@
-{
+﻿{
     "schema":  "FrozenReleaseManifestV1",
     "frozen_utc":  "2026-09-17T20:54:30Z",
-    "release_root":  "C:\\Users\\NL\\Desktop\\NEW BINANCE\\Binance\\target\\release",
+    "release_root":  "<WORKSPACE>\\Binance\\target\\release",
     "method":  "closure-20260917 generator: tree hashes are SHA-256 over sorted \u0027SHA256 *relpath\u0027 lines; public_config is the sorted concatenation of Binance\\runbooks\\*.md; source_lock is BINANCE_SOURCE_LOCK.md",
     "toolchain":  {
                       "rustc":  "rustc 1.98.0 (88d9e12ae 2026-08-18)",

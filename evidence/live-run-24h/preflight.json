@@ -1,4 +1,4 @@
-{
+﻿{
     "schema":  "HotRedundantQualificationPreflightV1",
     "status":  "PASS",
     "mode":  "Continuous",
@@ -54,7 +54,7 @@
                            "logman_sha256":  "a6325762ed7725748df62d9bf3478596da03aa8ce0a9eb8e07087eebfa52cdac",
                            "python_sha256":  "4b8c3912806b3c1591ba3cb403bff77ad309c3fe5756f87c20b7a6f8f0174262",
                            "python_source":  {
-                                                 "root":  "C:\\Users\\NL\\Desktop\\NEW BINANCE\\Binance\\src\\binance_lob",
+                                                 "root":  "<WORKSPACE>\\Binance\\src\\binance_lob",
                                                  "files":  45,
                                                  "tree_sha256":  "e8ac49e326dd67f6fb9464a1539a14a485e3b40ecbd3b183fa95fb11698cf316"
                                              },
@@ -67,5 +67,5 @@
                            "launcher_sha256":  "8a78f409c32d640af23d33eea917c69fe4556160885616e6fd5a73aa21fdab4e"
                        },
     "run_id":  "hrs-5971e1d2cb41",
-    "run_root":  "C:\\Users\\NL\\Desktop\\NEW BINANCE\\Binance\\artifacts\\hrs\\hrs-5971e1d2cb41"
+    "run_root":  "<WORKSPACE>\\Binance\\artifacts\\hrs\\hrs-5971e1d2cb41"
 }
