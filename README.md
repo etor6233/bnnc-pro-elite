@@ -109,17 +109,17 @@ flowchart LR
     V1 --> VER{Byte-identical verdicts + digests}
     V2 --> VER
     VER -->|PASS| SEAL[Sealed window + typed gaps audited]
-    subgraph CPP[Venue-connectivity layer (cpp/, 2026-09-18)]
+    subgraph CPP["Venue-connectivity layer (cpp/) - 2026-09-18"]
         ITCH[ITCH 5.0 + OUCH codecs]
         SBE[SBE Binance decoder<br/>cross-checked vs official codegen]
         NET[Multicast UDP + seq recovery<br/>NAK retransmission]
         REC[Typed silence detection<br/>A/B arbitration + snapshot bridging]
-        RES[Layered anti-loss<br/>live -> cache -> REST backfill]
+        RES[Layered anti-loss<br/>live - cache - REST backfill]
         FIX[FIX 4.4 session<br/>logon/heartbeat/resend]
     end
     CPP --> BENCH[Benchmarks measured<br/>SBE 83 ns p50 decode]
     CPP --> CI[CI Linux + Windows<br/>Rust + Python + C++ green]
-    W1 -. latency probe .-> PROBE[Measured delay<br/>depth p50 120 ms / RTT 371-388 ms]
+    W1 -. latency probe .-> PROBE[Measured delay<br/>depth p50 120 ms, RTT 371-388 ms]
     W3 -. clock offset .-> PROBE
     BENCH --> EV[evidence/ + cpp/evidence/]
     CI --> EV
