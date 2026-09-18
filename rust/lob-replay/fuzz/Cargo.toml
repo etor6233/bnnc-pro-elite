@@ -1,0 +1,22 @@
+[package]
+name = "lob-replay-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+lob-replay = { path = ".." }
+
+[[bin]]
+name = "transport_ws"
+path = "fuzz_targets/transport_ws.rs"
+test = false
+doc = false
+bench = false
+
+[profile.release]
+debug = 1

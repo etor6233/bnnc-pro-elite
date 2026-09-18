@@ -1,0 +1,31 @@
+{
+  "schema": "VerifiedHotRedundantCaptureV1",
+  "status": "PASS",
+  "supervisor_id": "1789711304048682700-ETHUSDT-redundant-eadbfd863f2e",
+  "artifact_id": "hr-aa235923a1c9",
+  "symbol": "ETHUSDT",
+  "terminal_status": "COMPLETE_NO_DUAL_OUTAGE",
+  "terminal_file_sha256": "60b70cda547653de9e696bf005d893d2d1c0692a47a5ff64d3a10bbbbae9a8f6",
+  "journal_records": 14,
+  "journal_terminal_sha256": "5ea49cc9ce99f03f0053d03034380d8cb3247aae3e3b8a66fabbf492b42ef98b",
+  "gaps": [],
+  "lane_campaigns": [
+    {
+      "lane": "SHADOW",
+      "token": "shadow-1-8f504648f17a",
+      "campaign_id": "1789711304291379700-ETHUSDT-raw-5ba935cbbbf7",
+      "status": "VERIFIED_COMPLETE",
+      "campaign_verification_sha256": "6684022d646ec998cef878c08f04e6a7f4c926bd82bc4d007115813c27be2ab6",
+      "failure_record_sha256": null
+    },
+    {
+      "lane": "PRIMARY",
+      "token": "primary-1-438249cbf976",
+      "campaign_id": "1789711304287472200-ETHUSDT-raw-a6a97826cc77",
+      "status": "VERIFIED_COMPLETE",
+      "campaign_verification_sha256": "3aa0ef3d6a55f2e2f1e4f4235bfd89f80c888f1c317bbd66b130b62df5dec14e",
+      "failure_record_sha256": null
+    }
+  ],
+  "verification_sha256": "447b3633803b66e36ec0f8b5741234b4e8e94b13efc8c1c4c1208c33535b6c79"
+}

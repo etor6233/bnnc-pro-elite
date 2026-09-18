@@ -1,0 +1,4 @@
+# Runtime dependency fixed for CPython 3.14 / Windows x86-64.
+# Downloaded from PyPI on 2026-08-22 and retained under ignored artifacts/deps.
+websockets==17.0.1 \
+    --hash=sha256:81ce19c6046ace11da7001781be7317bb1dc389f399af4b2ed962190f76f9add

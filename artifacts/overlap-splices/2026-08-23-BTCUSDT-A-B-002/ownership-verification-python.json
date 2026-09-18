@@ -1,0 +1,20 @@
+{
+  "active_owner": {
+    "depth_epoch": "d1ce3b2c-ec9c-4580-9bff-db6808963bc6",
+    "depth_last_sequence": 98960068894,
+    "fencing_token": 2,
+    "generation_id": "generation-b",
+    "schema": "SourcePointerSnapshotV1",
+    "symbol": "BTCUSDT",
+    "trade_epoch": "b2ebf832-014e-4f7b-8296-1bbf740dbd60",
+    "trade_last_sequence": 6603834232
+  },
+  "active_owner_sha256": "8d589a6f6326fa6b6d23368dbd1a713f8743107bffe86522cdad5701d157030c",
+  "credentials": "NONE",
+  "last_record_sha256": "5b13201e1bcb6e7ac68086d1d92bf395957bcd171920755774871ca5712e6371",
+  "ledger": "artifacts\\overlap-splices\\2026-08-23-BTCUSDT-A-B-002\\ownership.bnledger",
+  "order_entry": "ABSENT",
+  "records": 3,
+  "schema": "OwnershipVerificationV1",
+  "status": "PASS"
+}

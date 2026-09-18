@@ -1,0 +1,92 @@
+{
+    "schema":  "FrozenReleaseManifestV1",
+    "frozen_utc":  "2026-09-17T20:54:30Z",
+    "release_root":  "C:\\Users\\NL\\Desktop\\NEW BINANCE\\Binance\\target\\release",
+    "method":  "closure-20260917 generator: tree hashes are SHA-256 over sorted \u0027SHA256 *relpath\u0027 lines; public_config is the sorted concatenation of Binance\\runbooks\\*.md; source_lock is BINANCE_SOURCE_LOCK.md",
+    "toolchain":  {
+                      "rustc":  "rustc 1.98.0 (88d9e12ae 2026-08-18)",
+                      "cargo":  "cargo 1.98.0 (797e8a9bc 2026-08-05)",
+                      "target":  "x86_64-pc-windows-msvc",
+                      "rust_toolchain_toml_sha256":  "557B05F5718697BEFE2ABF923F5E7FD432C647C818203331A64E203FF2BF0A03"
+                  },
+    "sources":  {
+                    "workspace_cargo_toml_sha256":  "A9B814DF766D9249677B4CC6EA8E7E31EE5E295652E1679C3B40767B31A57756",
+                    "cargo_lock_sha256":  "C34002D89DAF232F78DBDC338CCE20673F908BDD43E4E9D6F80E3A1146625D9E",
+                    "rust_tree_sha256":  "D7D20E885DCF654956962E64F99A1D28E0B7996EA8A290C7F23ED21F27069A79",
+                    "rust_tree_files":  87,
+                    "python_source_tree_sha256":  "81BD9B1C84B44D237BC638BA644BF1FDFAECC7966EA88EF05FEBB9EA2F2997EB",
+                    "python_source_files":  88,
+                    "launcher_sha256":  "8A78F409C32D640AF23D33EEA917C69FE4556160885616E6FD5A73AA21FDAB4E",
+                    "public_config_sha256":  "9D8BC999CD984680A72277AD4FB12B9717BF48929399A9EACAC2E38FD0A4707D",
+                    "source_lock_sha256":  "9C49EC422CA6A7D98611391E13801B18012F93FC13432AF28996F2511C63AAF1"
+                },
+    "binaries":  {
+                     "live_arbitration.exe":  {
+                                                  "sha256":  "14581FFED77B553484DA9DC7678E77789862DEA54EA36A0EA4DC80CF7EDCFDF5",
+                                                  "bytes":  791040
+                                              },
+                     "live_arbitration_verify.exe":  {
+                                                         "sha256":  "39A07759432D815D2746BF82DA75D0F6D36A065010C430916E767A494729B6D9",
+                                                         "bytes":  616960
+                                                     },
+                     "hot_redundant_capture.exe":  {
+                                                       "sha256":  "39E65006D2EEEBC0B50ACFEC5300021F2A3D66BD7957D1856A19B25676BAB857",
+                                                       "bytes":  557056
+                                                   },
+                     "hot_redundant_verify.exe":  {
+                                                      "sha256":  "D7EB9E60C360C8737A33D09917AE47610BB3B0D2BD50F4AA3BCB3E5CF8C0B4D3",
+                                                      "bytes":  1280000
+                                                  },
+                     "kernel_network_trace.exe":  {
+                                                      "sha256":  "9E1C60135CE14E20993AE6A1AB7071B2D815A5A8B656989581FF82E8D835EEC5",
+                                                      "bytes":  211456
+                                                  },
+                     "raw_campaign.exe":  {
+                                              "sha256":  "5F727C27BDF8A775B61DB16F7CEAEAFA8911ECAAF0A66FB19EC68652F5DE46E0",
+                                              "bytes":  1266176
+                                          },
+                     "segmented_capture.exe":  {
+                                                   "sha256":  "DD855C3DBDCE1A104671B0121AA39AF3C255835F78387FC82287716EAE6254B2",
+                                                   "bytes":  4148736
+                                               },
+                     "campaign_verify.exe":  {
+                                                 "sha256":  "12067B363A2F6F1B7E43C7C35FA3FA8369D53A7C3CD66152D73F260CB54A363E",
+                                                 "bytes":  1148416
+                                             }
+                 },
+    "changes_20260917":  {
+                             "note":  "Circuit breaker per-lane (tetsuo port, umbral 5, cooldown 60 s), watchdog ping-\u003epong (30 s/5 s) con tipado transport-dead vs exchange-silent, RTT en WS_PONG_RECEIVED (opcional), fuzz harness aislado (fuzz/), y fix del piso de bind en la recuperacion del arbiter (defecto hrs-7c9c792ca38c expuesto por el fault gate).",
+                             "python_segment_chain_changed":  true
+                         },
+    "gate_binding":  {
+                         "note":  "Gates re-run contra ESTE root via -ReleaseBinRootOverride; logs en continuation-20260916/logs/*-20260917-closure.*",
+                         "fault_gate_exit":  0,
+                         "service_gate_exit":  0,
+                         "service_gate_verified":  true,
+                         "service_gate_errors":  [],
+                         "service_gate_outer_gaps":  0,
+                         "service_gate_renewals_btc_eth":  "27/27",
+                         "service_gate_sealed_verified":  "27/27",
+                         "service_gate_milestones":  "1-30",
+                         "service_gate_launcher_exit_code":  0
+                     },
+    "code_identity_vs_fault_doubles":  {
+                                          "method":  "byte-diff release vs rust-target fault doubles; ALL differing bytes zeroed in both files, then SHA-256 compared",
+                                          "result":  "every core bin differs in exactly 20 bytes: 1 PE TimeDateStamp + 12 bytes (3 debug-directory entry timestamps) + 7 bytes of the CodeView RSDS GUID - all build-time link metadata (verified values 0x6AAC48xx = Sep-2026 timestamps)",
+                                          "normalized_hashes_equal":  true,
+                                          "per_binary_diff_bytes":  20,
+                                          "bins":  [
+                                                       "live_arbitration.exe",
+                                                       "live_arbitration_verify.exe",
+                                                       "hot_redundant_capture.exe",
+                                                       "hot_redundant_verify.exe",
+                                                       "kernel_network_trace.exe"
+                                                   ]
+                                      },
+    "preflight":  {
+                      "status":  "PASS",
+                      "exit":  0,
+                      "command":  "powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File Binance\\scripts\\run_hot_redundant_qualification.ps1 -Mode ValidateOnly -ReleaseBinRoot Binance\\target\\release",
+                      "observed_utc":  "2026-09-17T20:54Z"
+                  }
+}

@@ -1,0 +1,27 @@
+injected supervisor kill (pid 31664)
+stop.request written after all injected faults recovered
+{
+    "schema":  "ContinuousFaultGateV1",
+    "run_root":  "C:\\Users\\NL\\Desktop\\NEW BINANCE\\Binance\\artifacts\\hsc\\hrs-39d889ab67d8",
+    "observed":  {
+                     "arbiter_early_exits":  2,
+                     "resumed_relaunches":  3,
+                     "outer_gap_opened":  1,
+                     "outer_gap_closed":  1,
+                     "auditor_timeouts":  1
+                 },
+    "terminal_status":  "CAPTURE_COMPLETE_WITH_OBSERVABILITY_FAILURES",
+    "binary_hashes":  {
+                          "hot_redundant_capture.exe":  "39E65006D2EEEBC0B50ACFEC5300021F2A3D66BD7957D1856A19B25676BAB857",
+                          "hot_redundant_verify.exe":  "D7EB9E60C360C8737A33D09917AE47610BB3B0D2BD50F4AA3BCB3E5CF8C0B4D3",
+                          "live_arbitration.exe":  "14581FFED77B553484DA9DC7678E77789862DEA54EA36A0EA4DC80CF7EDCFDF5",
+                          "live_arbitration_verify.exe":  "39A07759432D815D2746BF82DA75D0F6D36A065010C430916E767A494729B6D9",
+                          "fault_arbiter_once.exe":  "A3AF49CCDC76693F317C1366D66FB235D5BB6F7EE50EC2BBF0C8F555091ECD9E",
+                          "fault_verifier_hang_once.exe":  "C4C28F003E4718A4789EAF77245E47B82D4D8D5B567B044B437DA596ED79E36B"
+                      },
+    "wall_seconds":  814.9,
+    "errors":  [
+
+               ],
+    "verified":  true
+}

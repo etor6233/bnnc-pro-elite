@@ -1,0 +1,31 @@
+{
+  "schema": "VerifiedHotRedundantCaptureV1",
+  "status": "PASS",
+  "supervisor_id": "1789697803666272900-BTCUSDT-redundant-a16c6977557d",
+  "artifact_id": "hr-acaf97c770dc",
+  "symbol": "BTCUSDT",
+  "terminal_status": "COMPLETE_NO_DUAL_OUTAGE",
+  "terminal_file_sha256": "b883c399ab4fa674527c4295da18f229d8cb0abcf72c290ea90057658f0a084e",
+  "journal_records": 14,
+  "journal_terminal_sha256": "efeec08121d712e886db1087fb70c18b3afdcd50ad7664d7087c3c3cb9b22a6d",
+  "gaps": [],
+  "lane_campaigns": [
+    {
+      "lane": "SHADOW",
+      "token": "shadow-1-c4c668ea48a2",
+      "campaign_id": "1789697803685245600-BTCUSDT-raw-97673cd6dd76",
+      "status": "VERIFIED_COMPLETE",
+      "campaign_verification_sha256": "9aeb6659041bddb24c8956f4453acecf18a895b28fabd31e917522cb8ed03073",
+      "failure_record_sha256": null
+    },
+    {
+      "lane": "PRIMARY",
+      "token": "primary-1-368a5b4f6661",
+      "campaign_id": "1789697803675793000-BTCUSDT-raw-b4505580b4a3",
+      "status": "VERIFIED_COMPLETE",
+      "campaign_verification_sha256": "6fc5cca5537bc4599af369076e0dfdf82ab6c8f77cd299ee06812152de40c5a6",
+      "failure_record_sha256": null
+    }
+  ],
+  "verification_sha256": "a16311d650655d76615dc3a8cb371c8827b22f9ac47b67b8651299d73bdc405b"
+}

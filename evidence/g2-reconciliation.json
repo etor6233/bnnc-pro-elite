@@ -1,0 +1,49 @@
+{
+    "generated_utc":  "2026-09-17T23:49:33.0057590Z",
+    "verdict":  "PASS",
+    "schema":  "G2ReconciliationV1",
+    "journals":  [
+
+                 ],
+    "symbols":  [
+                    {
+                        "python_status":  "PASS",
+                        "rust_report_sha256":  "ADC6D62345083553A25799DB50FF3705D9F8DE77F3FA97FE34F1E60C6CDADB14",
+                        "journal_sha256":  "7CECB611E48EF15ACFD47E20854F0205C39C290028515E34962EB72FD6519993",
+                        "mismatched_fields":  [
+
+                                              ],
+                        "python_terminal_complete":  true,
+                        "rust_oracle_identity":  "PASS",
+                        "python_tail_bytes":  0,
+                        "symbol":  "BTCUSDT",
+                        "fields_equal":  true,
+                        "verdict":  "PASS",
+                        "rust_status":  "PASS",
+                        "rust_terminal_complete":  true,
+                        "python_report_sha256":  "CF63944D33FAE92C1447B3CBAF537C05DBD41282E7D312AB966B05AC41F8CFC4",
+                        "rust_tail_bytes":  0,
+                        "python_oracle_identity":  "PASS"
+                    },
+                    {
+                        "python_status":  "PASS",
+                        "rust_report_sha256":  "890C80C4DD3E08551FBDDB8C74815579FB77180B3FBCBB55C53ECB29517EC446",
+                        "journal_sha256":  "46BD0CB027EBBB7C549FDED98B683168BB0428CF829CC73A53C1E04786B24A04",
+                        "mismatched_fields":  [
+
+                                              ],
+                        "python_terminal_complete":  true,
+                        "rust_oracle_identity":  "PASS",
+                        "python_tail_bytes":  0,
+                        "symbol":  "ETHUSDT",
+                        "fields_equal":  true,
+                        "verdict":  "PASS",
+                        "rust_status":  "PASS",
+                        "rust_terminal_complete":  true,
+                        "python_report_sha256":  "2E95AD7B0F5DB8383580F5A15A2A4F739567DF9B4FA7FFA53B1C11AB6C92E8B2",
+                        "rust_tail_bytes":  0,
+                        "python_oracle_identity":  "PASS"
+                    }
+                ],
+    "run_id":  "g2py-20260917-1b9ca665f50e"
+}

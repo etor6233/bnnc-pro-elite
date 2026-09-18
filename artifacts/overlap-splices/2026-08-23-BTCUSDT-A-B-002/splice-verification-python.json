@@ -1,0 +1,25 @@
+{
+  "credentials": "NONE",
+  "depth": {
+    "boundary_sequence": 98960068894,
+    "boundary_sha256": "c4d5896dfd6961706708e1b1f50ba9d9696385db7d619988d6d1aeb3d03a9552",
+    "excluded_overlap_records": 57,
+    "predecessor_materialization_sha256": "63151f796a3dd7ac6da3574a0c66a8bcf990ead577722209f7ebe8c20173e7f7",
+    "selected_observations": 134,
+    "selection_sha256": "8b0bd2a7bc17a787233010b5b0ed3eab3198495f78bf6edb8ff1aaf547604f03",
+    "successor_materialization_sha256": "1191fb9fc49ee585ed4abb0e1b91cafae37a5e022f9bd06105754985b85b12b9"
+  },
+  "order_entry": "ABSENT",
+  "schema": "SpliceVerificationV1",
+  "splice_dir": "artifacts\\overlap-splices\\2026-08-23-BTCUSDT-A-B-002",
+  "status": "PASS",
+  "trade": {
+    "boundary_sequence": 6603834232,
+    "boundary_sha256": "95ca679e1c750df833f22bafd454a6eba7f49c5bc96c8e307e66dbf2761483e1",
+    "excluded_overlap_records": 11,
+    "predecessor_materialization_sha256": "aec10a240950d39590ddfef6f269fbf28ca4fb4f846990e9dbb8f41f4872b396",
+    "selected_observations": 282,
+    "selection_sha256": "cba7c9d560af8fa4744c5ca93fb79b3c0697766a8d65856b7054f42fbb43f54b",
+    "successor_materialization_sha256": "ebb3b54f0586bfb38061d6af1bed971c243b68de020d80c810bd1230c6ea34e5"
+  }
+}

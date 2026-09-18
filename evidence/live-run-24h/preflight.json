@@ -1,0 +1,71 @@
+{
+    "schema":  "HotRedundantQualificationPreflightV1",
+    "status":  "PASS",
+    "mode":  "Continuous",
+    "total_seconds":  86400,
+    "continuous":  true,
+    "epoch_window_seconds":  14400,
+    "time_scale":  1,
+    "skip_kernel_observer":  false,
+    "symbols":  [
+                    "BTCUSDT",
+                    "ETHUSDT"
+                ],
+    "topology":  {
+                     "lanes_per_symbol":  2,
+                     "primary_rotation_s":  82800,
+                     "shadow_rotation_s":  81900,
+                     "overlap_s":  900,
+                     "segment_s":  900,
+                     "primary_window_s":  14400,
+                     "shadow_window_s":  14040,
+                     "online_cross_lane_merge":  false
+                 },
+    "disk":  {
+                 "free_gib":  2595,
+                 "projected_capture_gib_with_safety":  192,
+                 "persistent_reserve_gib":  100,
+                 "required_gib":  292
+             },
+    "clock":  {
+                  "healthy":  true,
+                  "leap_indicator":  0,
+                  "stratum":  4,
+                  "source":  "time.cloudflare.com,0x8",
+                  "last_successful_sync":  "9/17/2026 11:15:45 PM",
+                  "root_delay_s":  0.172934,
+                  "root_dispersion_s":  0.0147598,
+                  "phase_offset_s":  -1E-07,
+                  "seconds_since_last_good_sync":  57.0615908,
+                  "maximum_last_good_sync_age_s":  21600,
+                  "state_machine":  2,
+                  "last_sync_error":  0,
+                  "poll_interval_s":  64,
+                  "raw_status_sha256":  "0ec03819282f2151ebf389bc9d9e2285c97ab6a9fdf080b840a061d6575f588d",
+                  "query_exit_code":  0
+              },
+    "implementation":  {
+                           "hot_redundant_capture_sha256":  "39e65006d2eeebc0b50acfec5300021f2a3d66bd7957d1856a19b25676bab857",
+                           "hot_redundant_verify_sha256":  "d7eb9e60c360c8737a33d09917ae47610bb3b0d2bd50f4aa3bcb3e5cf8c0b4d3",
+                           "kernel_network_trace_sha256":  "9e1c60135ce14e20993ae6a1ab7071b2d815a5a8b656989581ff82e8d835eec5",
+                           "live_arbitration_sha256":  "14581ffed77b553484da9dc7678e77789862dea54ea36a0ea4dc80cf7edcfdf5",
+                           "live_arbitration_verify_sha256":  "39a07759432d815d2746bf82da75d0f6d36a065010c430916e767a494729b6d9",
+                           "tracerpt_sha256":  "a83fe5ce5f57fafdf5dced6ef3ba8be143b474658d6224adb51c42bfcec77464",
+                           "logman_sha256":  "a6325762ed7725748df62d9bf3478596da03aa8ce0a9eb8e07087eebfa52cdac",
+                           "python_sha256":  "4b8c3912806b3c1591ba3cb403bff77ad309c3fe5756f87c20b7a6f8f0174262",
+                           "python_source":  {
+                                                 "root":  "C:\\Users\\NL\\Desktop\\NEW BINANCE\\Binance\\src\\binance_lob",
+                                                 "files":  45,
+                                                 "tree_sha256":  "e8ac49e326dd67f6fb9464a1539a14a485e3b40ecbd3b183fa95fb11698cf316"
+                                             },
+                           "network_witness_script_sha256":  "a4666a43770e0bff9b216e6774504788b9b7244144243c2b6ce2e819db3dd02f",
+                           "system_evidence_script_sha256":  "61df2d09b86d75cfd8030e32369383ab15735825c5eae7ce272ea24cf4a23e92",
+                           "windows_helper_script_sha256":  "291957fad29b463e1355a17453fb2a2535c84434d0d41c228e7708cbe7202a4d",
+                           "powershell_sha256":  "8bb6fa8c283b4d92120b1ef249a9b311b0f804d4cabbe9981159976c8be76a5e",
+                           "public_config_sha256":  "2d07954328411bee070ce8476b7f8fd3a61620afd7ba078c98709bb00865de91",
+                           "source_lock_sha256":  "9c49ec422ca6a7d98611391e13801b18012f93fc13432af28996f2511c63aaf1",
+                           "launcher_sha256":  "8a78f409c32d640af23d33eea917c69fe4556160885616e6fd5a73aa21fdab4e"
+                       },
+    "run_id":  "hrs-5971e1d2cb41",
+    "run_root":  "C:\\Users\\NL\\Desktop\\NEW BINANCE\\Binance\\artifacts\\hrs\\hrs-5971e1d2cb41"
+}
