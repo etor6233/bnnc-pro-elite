@@ -1,0 +1,88 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  rust-python:
+    name: Rust + Python (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust (pinned by rust-toolchain.toml)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Ensure rustfmt and clippy components
+        run: |
+          rustup component add rustfmt clippy
+
+      - name: Install Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
+
+      - name: Rust format check
+        run: cargo fmt --all -- --check
+
+      - name: Rust tests (all targets)
+        run: cargo test --all-targets
+
+      - name: Rust clippy (warnings denied)
+        run: cargo clippy --all-targets -- -D warnings
+
+      # cfg-gate for the Windows-only modules: windows_etw / windows_tcp are
+      # #[cfg(windows)] in rust/lob-replay/src/lib.rs. Building all targets on
+      # Linux exercises their EXCLUSION; on Windows it exercises their
+      # INCLUSION. Both legs must compile.
+      - name: Windows-only modules cfg-gate (windows_etw / windows_tcp)
+        run: cargo check --all-targets
+
+      - name: Python unit tests
+        shell: bash
+        run: |
+          set -e
+          # The pinned hash lock (requirements.lock) is specific to the
+          # Windows x86-64 wheel; on Linux install the same pinned version
+          # from PyPI without the cross-platform hash.
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            python -m pip install -r requirements.lock
+          else
+            python -m pip install "websockets==17.0.1"
+          fi
+          export PYTHONPATH="$PWD/src"
+          python -m unittest discover -s tests -v
+
+  cpp:
+    name: C++ suites (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Python (golden vector generators)
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
+
+      - name: C++ suites (Windows, MSVC)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          powershell.exe -NoProfile -ExecutionPolicy Bypass -File cpp\build.ps1 -Phase all
+
+      - name: C++ suites (Linux, g++)
+        if: runner.os == 'Linux'
+        run: |
+          set -e
+          bash cpp/build.sh all

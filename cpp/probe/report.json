@@ -1,0 +1,44 @@
+{
+  "generated_utc": "2026-09-18T20:28:45Z",
+  "method": "one_way_delay_ms = local_receive_time - (venue_event_time_E_ms + median_clock_offset); offset via GET /api/v3/time x12; uncertainty = +/- median_REST_RTT/2. WS ping/pong RTT is clock-free (no offset involved).",
+  "spec_pins": {
+    "web_socket_streams_md_sha256": "32bf73a0bed3b75e3ca981fdbaf48c53544bbdfb5944ef8ed1c4d7af9aceba0a",
+    "rest_api_md_sha256": "49ea6809243fc7fb426e07f2fe662097736c7bb405bd2da5eef637d715427999"
+  },
+  "clock": {
+    "offset_median_ms": 30.640247469535097,
+    "rest_rtt_median_ms": 371.2317999743391,
+    "uncertainty_ms": 185.61589998716954
+  },
+  "ws_ping_pong_rtt_ms": {
+    "samples": 3,
+    "p50": 396.7589999665506,
+    "p99": 400.17430001171306,
+    "mean": 388.2934666665581,
+    "max": 400.17430001171306
+  },
+  "duration_s": 180,
+  "depth_btcusdt_100ms": {
+    "samples": 1785,
+    "one_way_ms_p50": 119.911865234375,
+    "one_way_ms_p99": 130.99072265625,
+    "one_way_ms_mean": 121.26528060442928,
+    "one_way_ms_max": 386.19921875,
+    "inter_arrival_s_p50": 0.09998890000861138,
+    "inter_arrival_s_p99": 0.11017140001058578
+  },
+  "trade_btcusdt": {
+    "samples": 3726,
+    "one_way_ms_p50": 124.56884765625,
+    "one_way_ms_p99": 450.0263671875,
+    "one_way_ms_mean": 131.8271740571952,
+    "one_way_ms_max": 450.996826171875,
+    "inter_arrival_s_p50": 4.299974534660578e-06,
+    "inter_arrival_s_p99": 1.0509684999706224
+  },
+  "notes": [
+    "measured on this host, one independent public connection",
+    "does not touch the productive 24h soak service",
+    "E is the venue event time (ms) per the pinned spec"
+  ]
+}

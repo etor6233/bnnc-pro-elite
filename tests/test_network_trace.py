@@ -50,7 +50,7 @@ def _fixture(root: Path, *, version: int = 1, afd_profile: str = "ErrorOnly") ->
             arguments.extend([
                 "--keywords", "0x8000000000000030", "--level", "4",
             ])
-    arguments.extend(["--file-name", str(etl_path), "--file-size", "64", "--log-mode", "circular"])
+    arguments.extend(["--file-name", str(etl_path.resolve()), "--file-size", "64", "--log-mode", "circular"])
     control_items: list[tuple[str, object]] = [
         ("schema", f"RawQualificationNetworkTraceControlV{version}"), ("run_id", run_id),
         ("status", "START_ATTEMPTED"), ("requested_utc", "2026-08-29T00:00:00Z"),
