@@ -66,7 +66,7 @@ PYTHONPATH=cpp/sbe-lane python3 -m unittest discover -s cpp/sbe-lane/tests -v
 ```powershell
 $env:BINANCE_SBE_API_KEY = "<ED25519_MARKET_DATA_ONLY>"
 python cpp\sbe-lane\sbe_lane.py `
-  --url "wss://stream-sbe.binance.com:9443/stream?streams=btcusdt@depth@20ms/btcusdt@depth/btcusdt@trade/btcusdt@bestBidAsk/ethusdt@depth@20ms/ethusdt@depth/ethusdt@trade/ethusdt@bestBidAsk" `
+  --url "wss://stream-sbe.binance.com:9443/stream?streams=btcusdt@depth20/btcusdt@depth/btcusdt@trade/btcusdt@bestBidAsk/ethusdt@depth20/ethusdt@depth/ethusdt@trade/ethusdt@bestBidAsk" `
   --out "D:\captures\sbe-<fecha-hora>" `
   --duration 0 `
   --max-conn-s 82800
