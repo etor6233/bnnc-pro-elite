@@ -56,6 +56,7 @@ class MockSbeServer:
         self.frames = frames
         self.shutdown_json = shutdown_json
         self.saw_pong = False
+        self.saw_api_key = None  # X-MBX-APIKEY header value (None if absent)
         self.port = 0
         self._ready = threading.Event()
         self._server = None
@@ -63,6 +64,8 @@ class MockSbeServer:
     async def _handler(self, ws):
         if self.frames is None:
             return
+        # Record the API key header the lane sent (spec: X-MBX-APIKEY).
+        self.saw_api_key = ws.request.headers.get("X-MBX-APIKEY")
         # Spec: server pings; client must pong (echo handled by library).
         try:
             pong_waiter = await ws.ping()
@@ -224,6 +227,27 @@ class SbeLaneTests(unittest.TestCase):
             events = [r["body"]["payload"].get("event") for r in rows]
             self.assertIn("SERVER_SHUTDOWN", events)
             self.assertTrue(_verify_chain(rows))
+
+    def test_api_key_header_sent(self):
+        # Regression for the websockets header parameter: with a key present,
+        # the lane must send it exactly as X-MBX-APIKEY (spec) and never write
+        # it to disk.
+        frames = [_golden_bytes("depth_diff.bin")]
+        with tempdir() as tmp:
+            out = tmp / "lane"
+            mock = MockSbeServer(frames)
+            mock.start()
+            env = _lane_env(out)
+            env["BINANCE_SBE_API_KEY"] = "test-ed25519-api-key-value"
+            res = _run_lane(out, f"ws://127.0.0.1:{mock.port}", 3.0, env)
+            self.assertTrue(res["ok"], res["stderr"])
+            self.assertEqual(mock.saw_api_key, "test-ed25519-api-key-value")
+            # The key must NOT appear in any output file.
+            for p in out.iterdir():
+                if p.is_file():
+                    self.assertNotIn("test-ed25519-api-key-value",
+                                     p.read_text(encoding="utf-8",
+                                                 errors="ignore"))
 
     def test_reconnect_types_the_gap(self):
         frames = [_golden_bytes("trades_stream.bin")]

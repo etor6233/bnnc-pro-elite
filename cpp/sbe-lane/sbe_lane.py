@@ -117,7 +117,7 @@ class Lane:
         """Returns 'server_shutdown' or None; raises on transport error."""
         kwargs = {}
         if self.api_key:
-            kwargs["extra_headers"] = {"X-MBX-APIKEY": self.api_key}
+            kwargs["additional_headers"] = {"X-MBX-APIKEY": self.api_key}
         started = time.monotonic()
         async with websockets.connect(url, ping_interval=None, max_size=2**24,
                                       **kwargs) as ws:
