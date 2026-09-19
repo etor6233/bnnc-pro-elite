@@ -50,8 +50,7 @@ specification with test-red → implementation → test-green discipline:
   ±186 ms without PTP →
   [`cpp/probe/REPORT.md`](cpp/probe/REPORT.md) +
   [`cpp/probe/report.json`](cpp/probe/report.json)
-- **Executable SBE capture lane** (separate epochs, hash-chained journal,
-  typed gaps, decode CLI) — 3/3 green against a local mock; live run needs
+- **Executable SBE capture lane** (separate epochs, hash-chained journal, typed gaps, decode CLI) — 5/5 green against a local mock; live run needs
   only the Ed25519 market-data-only key →
   [`cpp/sbe-lane/RUNBOOK_SBE_LANE.md`](cpp/sbe-lane/RUNBOOK_SBE_LANE.md) +
   [`cpp/evidence/EVIDENCE_07_SBE_INTEGRATION.md`](cpp/evidence/EVIDENCE_07_SBE_INTEGRATION.md)
@@ -59,7 +58,7 @@ specification with test-red → implementation → test-green discipline:
   cfg-gate for the Windows-only `windows_etw`/`windows_tcp` modules) →
   [`.github/workflows/ci.yml`](.github/workflows/ci.yml)
 
-All new C++ suites are green: 57/57 tests + 3/3 SBE lane tests
+All new C++ suites are green: 57/57 tests + 5/5 SBE lane tests
 ([`cpp/evidence/logs/ALL_PHASES_GREEN_20260918.log`](cpp/evidence/logs/ALL_PHASES_GREEN_20260918.log),
 SHA256 `BE00419C…4870`). The Binance SBE production lane is deferred by the
 capture policy until the JSON gates close and an Ed25519 market-data-only key

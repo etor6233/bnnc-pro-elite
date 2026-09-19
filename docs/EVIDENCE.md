@@ -30,3 +30,5 @@ Every number quoted in the README traces to a file here or in `evidence/`.
 | Final act with the complete DONE checklist | \cpp/ACTA_FINAL_VENUE_CONNECTIVITY_20260918.md\ |
 
 | Live latency probe host <-> venue (depth p50 119.9 ms, RTT 371-388 ms, +-186 ms) | \cpp/probe/REPORT.md\ + \cpp/probe/report.json\ |
+
+| Live SBE campaign audit (11h, 4.52M frames, chain OK, 0 gaps, 20k/20k decode) | \cpp/evidence/EVIDENCE_09_LIVE_SBE_CAMPAIGN.md\ |
