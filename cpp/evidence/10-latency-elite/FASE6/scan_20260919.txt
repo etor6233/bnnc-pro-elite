@@ -1,0 +1,18 @@
+﻿key-literal | 0 hits (external key file lines not found anywhere in the repo)
+pattern | 0 hits: -----BEGIN [A-Z ]*PRIVATE KEY-----
+pattern | 0 hits: (?i)api[_-]?key["'\s:=]+[A-Za-z0-9]{24,}
+pattern | 0 hits: (?i)secret["'\s:=]+[A-Za-z0-9]{24,}
+pattern | 0 hits: (?i)password["'\s:=]+[^"'\s]{8,}
+personal-path | HIT in \cpp\evidence\EVIDENCE_08_PUBLICATION.md:22
+language | HIT in \cpp\evidence\EVIDENCE_01_ITCH_OUCH.md:1: # EVIDENCIA — FASE 1: Codec ITCH 5.0 + OUCH-semántica en C++
+language | HIT in \cpp\evidence\EVIDENCE_01_ITCH_OUCH.md:24: tomados de las tablas de la spec: 1.1, 1.2.1, 1.2.2, 1.3.1, 1.3.2, 1.4.x,
+language | HIT in \cpp\evidence\EVIDENCE_01_ITCH_OUCH.md:33: outcomes del replace 2.2, cancel superfluo 2.3, cadena acumulativa).
+language | HIT in \cpp\evidence\EVIDENCE_01_ITCH_OUCH.md:39: - Todos los mensajes decodificados contra golden de la spec oficial: SÍ
+language | HIT in \cpp\evidence\EVIDENCE_01_ITCH_OUCH.md:44: ## Archivos de evidencia
+language | HIT in \cpp\evidence\EVIDENCE_01_ITCH_OUCH.md:49: (corrida completa en `cpp/build/logs/ALL_PHASES_GREEN.log`).
+language | HIT in \cpp\evidence\EVIDENCE_02_SBE.md:1: # EVIDENCIA — FASE 2: SBE decoder del schema oficial de Binance
+language | HIT in \cpp\evidence\EVIDENCE_02_SBE.md:14: - Codegen OFICIAL para golden vectors: `sbe-all-1.35.1.jar` (Maven Central,
+language | HIT in \cpp\evidence\EVIDENCE_02_SBE.md:26: mantissa64/exponent8, campo constante `isBestMatch` = True ausente del wire).
+language | HIT in \cpp\evidence\EVIDENCE_02_SBE.md:28: decoder generado oficial; TODOS los campos deben coincidir.
+link | checked 4 files (README, portfolio, docs/EVIDENCE, cpp/README)
+placeholder | HIT in \cpp\evidence\EVIDENCE_03C_RESILIENCE.md:39

@@ -16,7 +16,7 @@ implementation → test-green.
 | `recovery/` | Instant typed silence detection (cadence/watchdog) + A/B arbitration + Binance diff-depth book continuity | `ELITE_LOSS_RECOVERY_20260918.md` §0-§4 | `evidence/EVIDENCE_03B_RECOVERY.md` |
 | `resilience/` | Layered anti-loss capture: live → cache → REST backfill with `captured-live`/`backfilled` provenance | `ELITE_LOSS_RECOVERY_20260918.md` §6 | `evidence/EVIDENCE_03C_RESILIENCE.md` |
 | `fix/` | FIX 4.4 session layer (logon/heartbeat/resend/sequence-reset, NextNumIn/Out persistence) | MARKET_MICROSTRUCTURE §5.5 + QuickFIX reference | `evidence/EVIDENCE_04_FIX.md` |
-| `bench/` | Measured benchmarks (p50/p99/throughput, dev+final, anti-cheat) | — | `evidence/EVIDENCE_05_BENCHMARKS.md` |
+| `bench/` | Measured benchmarks (p50/p99/p99.9/p99.99 + throughput, dev+final, anti-cheat) + header-only HDR latency histogram + kernel-bypass design reference | HdrHistogram_c commit `1343a18908c6`; DPDK/OpenOnload/Machnet captures | `evidence/EVIDENCE_05_BENCHMARKS.md` + `evidence/10-latency-elite/` |
 
 ## Build & test
 
@@ -30,9 +30,32 @@ Linux (g++, CI leg):
 bash cpp/build.sh all
 ```
 
-Both regenerate every golden/malformed vector from the pinned generators
-before running the suites, so vectors and code always trace to the same spec
-bytes.
+`-Phase all` runs every suite (itch 5/5, sbe 4/4, ouch 11/11, net 12/12,
+recovery 10/10, resilience 5/5, fix 10/10, `bench` HDR 10/10 + cross-check,
+`spsc` 7/7 = **74/74**) and regenerates every golden/malformed vector from the
+pinned generators before running the suites, so vectors and code always trace
+to the same spec bytes.
+
+## Latency tooling (2026-09-19)
+
+- `bench/hdr_histogram.hpp` — header-only HDR histogram (3 significant
+  figures, `[1 ns, 1 h]`), HdrHistogram_c semantics; cross-validated against
+  an independent Python re-derivation (`bench/tools/crosscheck_hdr.py`,
+  4 corpora, 0 mismatches outside tolerance).
+- `bench/bench_false_sharing.cpp` — measured same-cache-line vs `alignas(64)`
+  counters (volatile, uncoalescable): **5.4× p50 penalty** of false sharing
+  on this host.
+- `bench/bench_spsc.cpp` — `net/spsc_ring.hpp` 1P/1C measured (push p50 48 ns
+  incl. timestamp, pop p50 1 ns, 21.4M msg/s, explicit overflow).
+- `bench/KERNEL_BYPASS_DESIGN.md` — DPDK / OpenOnload / Machnet design
+  reference with pinned-commit citations (documented, not executed: no
+  dedicated NICs on this host).
+- Measured Aeron IPC demo (official jars, SHA256-recorded):
+  `evidence/10-latency-elite/FASE3/AERON_IPC_REPORT.md`.
+
+Measured numbers live in `bench/benchmarks/*.json` (dev + final modes,
+including the `*_hdr.json` percentile reports); the rendered table is
+`bench-latency/index.html` at the repo root.
 
 ## Honesty boundaries
 

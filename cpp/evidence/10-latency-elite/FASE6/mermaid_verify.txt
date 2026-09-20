@@ -1,0 +1,3 @@
+PASS public-repo/README.md block 1 (flowchart-v2)
+PASS public-repo/README.md block 2 (flowchart-v2)
+NOTE docs/ROADMAP.md: no mermaid blocks
