@@ -96,6 +96,24 @@ build_sbelane() {
         "$ROOT/sbe-lane/sbe_decode_cli.cpp" "$ROOT/sbe/src/binance_sbe.cpp"
 }
 
+build_bench() {
+    compile "$BIN/test_hdr" \
+        "$ROOT/bench/tests/test_hdr.cpp"
+    "$BIN/test_hdr" "$ROOT"
+    compile "$BIN/hdr_cli" \
+        "$ROOT/bench/tools/hdr_cli.cpp"
+    python3 "$ROOT/bench/tools/crosscheck_hdr.py" \
+        --exe "$BIN/hdr_cli" \
+        --out "$ROOT/bench/tools/crosscheck_report.json" \
+        --evidence "$ROOT/evidence/10-latency-elite/FASE1"
+}
+
+build_spsc() {
+    compile "$BIN/test_spsc" -I"$ROOT/net/include" \
+        "$ROOT/net/tests/test_spsc.cpp"
+    "$BIN/test_spsc" "$ROOT"
+}
+
 case "$PHASE" in
     itch) build_itch ;;
     sbe) build_sbe ;;
@@ -105,6 +123,8 @@ case "$PHASE" in
     resilience) build_resilience ;;
     fix) build_fix ;;
     sbelane) build_sbelane ;;
+    bench) build_bench ;;
+    spsc) build_spsc ;;
     all)
         build_itch
         build_sbe
@@ -114,6 +134,8 @@ case "$PHASE" in
         build_resilience
         build_fix
         build_sbelane
+        build_bench
+        build_spsc
         ;;
     *)
         echo "unknown phase: $PHASE" >&2

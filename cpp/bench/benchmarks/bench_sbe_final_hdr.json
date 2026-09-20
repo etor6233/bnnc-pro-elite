@@ -1,16 +1,18 @@
 {
   "benchmark": "sbe_decode",
   "mode": "final",
+  "histogram": "bench/hdr_histogram.hpp, HdrHistogram_c semantics (commit 1343a18908c6), 3 sig figs, [1 ns, 1 h]",
+  "samples": 25000,
+  "batch_size": 1000,
   "iterations_per_rep": 5000000,
   "repetitions": 5,
-  "batch_size": 1000,
-  "corpus": "official-encoder golden vectors (sbe/golden)",
   "p50_ns": 83,
   "p99_ns": 182,
-  "mean_ns": 86.2468,
+  "p99.9_ns": 326,
+  "p99.99_ns": 966,
   "min_ns": 81,
   "max_ns": 1923,
-  "throughput_msg_per_s": 1.17661e+07,
+  "mean_ns": 86.2468,
   "anti_cheat": "fresh Decoded per iteration; volatile sink; no memoization",
   "measured_on": "MSVC cl 14.50 /O2, Windows x64"
 }

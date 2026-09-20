@@ -1,0 +1,144 @@
+{
+  "tool": "crosscheck_hdr.py",
+  "reference": "hdr_reference.py (HdrHistogram_c semantics, commit 1343a18908c6, BSD-2-Clause/CC0-1.0)",
+  "implementation": "cpp/bench/hdr_histogram.hpp + tools/hdr_cli.cpp",
+  "config": {
+    "lowest_discernible_value": 1,
+    "highest_trackable_value": 3600000000000,
+    "significant_figures": 3,
+    "percentiles": [
+      0.0,
+      50.0,
+      90.0,
+      99.0,
+      99.9,
+      99.99,
+      100.0
+    ]
+  },
+  "tolerance": "exact equality, or same equivalent-value bucket (<= 1 ULP of the HDR representation)",
+  "seed": 20260919,
+  "corpora": [
+    {
+      "name": "log_uniform",
+      "values": 100000,
+      "cpp": {
+        "total_count": 100000,
+        "min": 1,
+        "max": 1000190509055,
+        "p0": 1,
+        "p50": 937471,
+        "p90": 63115886591,
+        "p99": 765577920511,
+        "p99.9": 974957576191,
+        "p99.99": 998579896319,
+        "p100": 1000190509055
+      },
+      "reference": {
+        "total_count": 100000,
+        "min": 1,
+        "max": 1000190509055,
+        "p0": 1,
+        "p50": 937471,
+        "p90": 63115886591,
+        "p99": 765577920511,
+        "p99.9": 974957576191,
+        "p99.99": 998579896319,
+        "p100": 1000190509055
+      },
+      "mismatches_outside_tolerance": [],
+      "verdict": "PASS"
+    },
+    {
+      "name": "spikes",
+      "values": 100000,
+      "cpp": {
+        "total_count": 100000,
+        "min": 1,
+        "max": 110034943,
+        "p0": 1,
+        "p50": 9719,
+        "p90": 90046463,
+        "p99": 107937791,
+        "p99.9": 109838335,
+        "p99.99": 109969407,
+        "p100": 110034943
+      },
+      "reference": {
+        "total_count": 100000,
+        "min": 1,
+        "max": 110034943,
+        "p0": 1,
+        "p50": 9719,
+        "p90": 90046463,
+        "p99": 107937791,
+        "p99.9": 109838335,
+        "p99.99": 109969407,
+        "p100": 110034943
+      },
+      "mismatches_outside_tolerance": [],
+      "verdict": "PASS"
+    },
+    {
+      "name": "heavy_tail",
+      "values": 100000,
+      "cpp": {
+        "total_count": 100000,
+        "min": 1,
+        "max": 998579896319,
+        "p0": 1,
+        "p50": 52351,
+        "p90": 94655,
+        "p99": 60532195327,
+        "p99.9": 789200240639,
+        "p99.99": 964757028863,
+        "p100": 998579896319
+      },
+      "reference": {
+        "total_count": 100000,
+        "min": 1,
+        "max": 998579896319,
+        "p0": 1,
+        "p50": 52351,
+        "p90": 94655,
+        "p99": 60532195327,
+        "p99.9": 789200240639,
+        "p99.99": 964757028863,
+        "p100": 998579896319
+      },
+      "mismatches_outside_tolerance": [],
+      "verdict": "PASS"
+    },
+    {
+      "name": "uniform_small",
+      "values": 50000,
+      "cpp": {
+        "total_count": 50000,
+        "min": 1,
+        "max": 4099,
+        "p0": 1,
+        "p50": 2031,
+        "p90": 3683,
+        "p99": 4055,
+        "p99.9": 4093,
+        "p99.99": 4095,
+        "p100": 4099
+      },
+      "reference": {
+        "total_count": 50000,
+        "min": 1,
+        "max": 4099,
+        "p0": 1,
+        "p50": 2031,
+        "p90": 3683,
+        "p99": 4055,
+        "p99.9": 4093,
+        "p99.99": 4095,
+        "p100": 4099
+      },
+      "mismatches_outside_tolerance": [],
+      "verdict": "PASS"
+    }
+  ],
+  "verdict": "PASS"
+}

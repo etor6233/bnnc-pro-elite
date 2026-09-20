@@ -8,13 +8,22 @@ b=bids [price,qty], a=asks [price,qty]).
 
 Numbers are MEASURED only; anti-cheat: a fresh parse + a mandatory field
 extraction on every iteration (no memoization, no pre-parsed objects).
+
+FASE 1 addition: the same samples also feed an HDR histogram (via
+tools/hdr_reference.py, the independent Python port of the HdrHistogram_c
+semantics, commit 1343a18908c6) so the JSON lane reports p50/p99/p99.9/p99.99
+with 3 significant figures — comparable with the C++ benches.
 """
 from __future__ import annotations
 
 import json
+import pathlib
 import statistics
 import sys
 import time
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent / "tools"))
+import hdr_reference  # noqa: E402
 
 MSG = json.dumps({
     "e": "depthUpdate",
@@ -81,6 +90,34 @@ def main() -> int:
         json.dump(result, fh, indent=2)
         fh.write("\n")
     print(f"wrote {out}")
+
+    # FASE 1 HDR report: p50/p99/p99.9/p99.99 over the same samples.
+    hist = hdr_reference.HdrHistogram(1, 3_600_000_000_000, 3)
+    for s in all_samples:
+        hist.record(int(s))
+    hdr_result = {
+        "benchmark": "json_depth_decode",
+        "mode": mode,
+        "histogram": ("tools/hdr_reference.py, HdrHistogram_c semantics "
+                      "(commit 1343a18908c6), 3 sig figs, [1 ns, 1 h]"),
+        "samples": len(all_samples),
+        "iterations_per_rep": n,
+        "repetitions": reps,
+        "p50_ns": float(hist.value_at_percentile(50.0)),
+        "p99_ns": float(hist.value_at_percentile(99.0)),
+        "p99.9_ns": float(hist.value_at_percentile(99.9)),
+        "p99.99_ns": float(hist.value_at_percentile(99.99)),
+        "min_ns": float(hist.min()),
+        "max_ns": float(hist.max()),
+        "mean_ns": hist.mean(),
+        "anti_cheat": "fresh json.loads + mandatory field extraction per iteration; no memoization",
+        "measured_on": "CPython 3.14 stdlib json",
+    }
+    out_hdr = out[:-5] + "_hdr.json"
+    with open(out_hdr, "w", encoding="utf-8") as fh:
+        json.dump(hdr_result, fh, indent=2)
+        fh.write("\n")
+    print(f"wrote {out_hdr}")
     return 0
 
 

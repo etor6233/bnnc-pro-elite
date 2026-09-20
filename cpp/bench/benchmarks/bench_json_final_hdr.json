@@ -1,14 +1,17 @@
 {
   "benchmark": "json_depth_decode",
   "mode": "final",
+  "histogram": "tools/hdr_reference.py, HdrHistogram_c semantics (commit 1343a18908c6), 3 sig figs, [1 ns, 1 h]",
+  "samples": 5000000,
   "iterations_per_rep": 1000000,
   "repetitions": 5,
   "p50_ns": 1500.0,
-  "p99_ns": 4700.0,
-  "mean_ns": 1589.69064,
+  "p99_ns": 4703.0,
+  "p99.9_ns": 11407.0,
+  "p99.99_ns": 48127.0,
   "min_ns": 1300.0,
-  "max_ns": 2983700.0,
-  "throughput_msg_per_s": 612802.8862617634,
+  "max_ns": 2983935.0,
+  "mean_ns": 1589.7202228,
   "anti_cheat": "fresh json.loads + mandatory field extraction per iteration; no memoization",
   "measured_on": "CPython 3.14 stdlib json"
 }

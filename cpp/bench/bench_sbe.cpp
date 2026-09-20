@@ -23,12 +23,19 @@ static std::vector<uint8_t> read_bin(const fs::path& p) {
 
 int main(int argc, char** argv) {
     if (argc < 4) {
-        std::fprintf(stderr, "usage: bench_sbe <cpp-root> <mode> <out-json>\n");
+        std::fprintf(stderr,
+                     "usage: bench_sbe <cpp-root> <mode> <out-json> "
+                     "[out-hdr-json]\n");
         return 2;
     }
     const fs::path root = argv[1];
     const std::string mode = argv[2];
     const std::string out_path = argv[3];
+    // HDR percentiles (p50/p99/p99.9/p99.99 via bench/hdr_histogram.hpp) go
+    // to <out-hdr-json>, or to <out-json> with the "_hdr.json" suffix.
+    std::string out_hdr =
+        (argc >= 5) ? argv[4]
+                    : out_path.substr(0, out_path.size() - 5) + "_hdr.json";
 
     std::vector<std::vector<uint8_t>> corpus;
     const std::vector<std::string> names = {
@@ -82,5 +89,29 @@ int main(int argc, char** argv) {
          << "}\n";
     bench::write_json(out_path, json.str());
     std::printf("wrote %s\n", out_path.c_str());
+
+    // HDR percentile report (FASE 1 integration): p50/p99/p99.9/p99.99.
+    const auto hs = bench::hdr_stats(agg);
+    std::ostringstream hjson;
+    hjson << "{\n"
+          << "  \"benchmark\": \"sbe_decode\",\n"
+          << "  \"mode\": \"" << mode << "\",\n"
+          << "  \"histogram\": \"bench/hdr_histogram.hpp, HdrHistogram_c semantics (commit 1343a18908c6), 3 sig figs, [1 ns, 1 h]\",\n"
+          << "  \"samples\": " << hs.count << ",\n"
+          << "  \"batch_size\": " << 1000 << ",\n"
+          << "  \"iterations_per_rep\": " << N << ",\n"
+          << "  \"repetitions\": " << reps << ",\n"
+          << "  \"p50_ns\": " << hs.p50_ns << ",\n"
+          << "  \"p99_ns\": " << hs.p99_ns << ",\n"
+          << "  \"p99.9_ns\": " << hs.p999_ns << ",\n"
+          << "  \"p99.99_ns\": " << hs.p9999_ns << ",\n"
+          << "  \"min_ns\": " << hs.min_ns << ",\n"
+          << "  \"max_ns\": " << hs.max_ns << ",\n"
+          << "  \"mean_ns\": " << hs.mean_ns << ",\n"
+          << "  \"anti_cheat\": \"fresh Decoded per iteration; volatile sink; no memoization\",\n"
+          << "  \"measured_on\": \"MSVC cl 14.50 /O2, Windows x64\"\n"
+          << "}\n";
+    bench::write_json(out_hdr, hjson.str());
+    std::printf("wrote %s\n", out_hdr.c_str());
     return 0;
 }

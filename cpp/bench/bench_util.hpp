@@ -18,6 +18,8 @@
 #include <string>
 #include <vector>
 
+#include "hdr_histogram.hpp"
+
 namespace bench {
 
 using Clock = std::chrono::steady_clock;
@@ -37,6 +39,31 @@ struct Stats {
     double p50_ns = 0, p99_ns = 0, mean_ns = 0, min_ns = 0, max_ns = 0;
     double throughput_per_s = 0;
 };
+
+// HDR (High Dynamic Range) statistics from the FASE 1 histogram: p50/p99/
+// p99.9/p99.99 with 3 significant figures over [1 ns, 1 hour]. These are the
+// scientific-latency numbers (HdrHistogram_c semantics, commit
+// 1343a18908c6); they complement the nearest-rank Stats above.
+struct HdrStats {
+    uint64_t count = 0;
+    double p50_ns = 0, p99_ns = 0, p999_ns = 0, p9999_ns = 0;
+    double min_ns = 0, max_ns = 0, mean_ns = 0;
+};
+
+inline HdrStats hdr_stats(const std::vector<uint64_t>& samples) {
+    HdrHistogram h(1, 3'600'000'000'000LL /* 1 h in ns */, 3);
+    for (uint64_t s : samples) h.record((int64_t)s);
+    HdrStats st;
+    st.count = (uint64_t)samples.size();
+    st.p50_ns = (double)h.value_at_percentile(50.0);
+    st.p99_ns = (double)h.value_at_percentile(99.0);
+    st.p999_ns = (double)h.value_at_percentile(99.9);
+    st.p9999_ns = (double)h.value_at_percentile(99.99);
+    st.min_ns = (double)h.min();
+    st.max_ns = (double)h.max();
+    st.mean_ns = h.mean();
+    return st;
+}
 
 // Percentiles from the actual samples (linear interpolation not needed:
 // nearest-rank is documented and deterministic).

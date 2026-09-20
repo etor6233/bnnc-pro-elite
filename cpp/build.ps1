@@ -131,9 +131,21 @@ $phases = @{
         IncludeDirs = @("$Root\sbe\include");
         NoTest = $true;
     }
+    bench = @{
+        Tools = @();
+        Sources = @("$Root\bench\tests\test_hdr.cpp");
+        Output = "$BinDir\test_hdr.exe";
+        IncludeDirs = @("$Root");
+    }
+    spsc = @{
+        Tools = @();
+        Sources = @("$Root\net\tests\test_spsc.cpp");
+        Output = "$BinDir\test_spsc.exe";
+        IncludeDirs = @("$Root\net\include");
+    }
 }
 
-if ($Phase -eq "all") { $names = @("itch", "sbe", "ouch", "net", "recovery", "resilience", "fix", "sbelane") }
+if ($Phase -eq "all") { $names = @("itch", "sbe", "ouch", "net", "recovery", "resilience", "fix", "sbelane", "bench", "spsc") }
 else { $names = @($Phase) }
 
 foreach ($n in $names) {
@@ -153,6 +165,14 @@ foreach ($n in $names) {
             Invoke-Test -Exe $ph.Output -PhaseName $n
         }
     }
+}
+
+# FASE 1 (latency elite): build the HDR CLI and run the cross-validation
+# against the independent Python reference (HdrHistogram_c semantics).
+if ($names -contains "bench") {
+    Invoke-ClBuild -Sources @("$Root\bench\tools\hdr_cli.cpp") -Output "$BinDir\hdr_cli.exe" -IncludeDirs @("$Root")
+    python "$Root\bench\tools\crosscheck_hdr.py" --exe "$BinDir\hdr_cli.exe" --out "$Root\bench\tools\crosscheck_report.json" --evidence "$Root\evidence\10-latency-elite\FASE1"
+    if ($LASTEXITCODE -ne 0) { Write-Host "CROSSCHECK FAILED"; exit $LASTEXITCODE }
 }
 
 Write-Host "== ALL PHASES GREEN =="
