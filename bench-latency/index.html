@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>bnnc-pro-elite — measured latency benchmarks</title>
+<style>
+body{font-family:system-ui,sans-serif;margin:2rem auto;max-width:64rem;padding:0 1rem;color:#1a1a1a;line-height:1.5}
+h1,h2{font-weight:600}
+table{border-collapse:collapse;width:100%;margin:1rem 0 2rem}
+th,td{border:1px solid #d0d0d0;padding:.4rem .6rem;text-align:right;font-variant-numeric:tabular-nums}
+th:first-child,td:first-child{text-align:left}
+th{background:#f4f4f4}
+code{background:#f4f4f4;padding:.1rem .3rem;border-radius:3px}
+.note{color:#555;font-size:.9rem}
+</style>
+</head>
+<body>
+<h1>Measured latency benchmarks</h1>
+<p class="note">Generated from the committed JSON files under <code>cpp/bench/benchmarks/</code> by <code>cpp/bench/tools/make_pages_report.py</code>. Every number on this page was produced by a real run of <code>cpp/bench/run_benchmarks.ps1</code> or <code>run_benchmarks.sh</code> — nothing is estimated. HDR percentiles (p50/p99/p99.9/p99.99) use the 3-significant-figure histogram in <code>cpp/bench/hdr_histogram.hpp</code> (HdrHistogram_c semantics, commit <code>1343a18908c6</code>). Final-mode numbers are measured on the quiet local machine; CI publishes dev-mode runs as artifacts.</p>
+<h2>false_sharing</h2>
+<table>
+<tr><th>mode</th><th>samples</th><th>p50 (HDR, ns)</th><th>p99 (HDR, ns)</th><th>p99.9 (HDR, ns)</th><th>p99.99 (HDR, ns)</th><th>mean (ns)</th><th>min (ns)</th><th>max (ns)</th><th>throughput</th><th>measured on</th></tr>
+<tr><td>dev — same_line</td><td>30000</td><td>0.82</td><td>3.781</td><td>4.411</td><td>15.807</td><td>0.933498</td><td>—</td><td>—</td><td>2,108,020,000 ops/s</td><td>MSVC cl 14.50 /O2, Windows x64</td></tr>
+<tr><td>dev — separate_lines</td><td>30000</td><td>0.19</td><td>0.32</td><td>0.47</td><td>1.36</td><td>0.190028</td><td>—</td><td>—</td><td>10,279,400,000 ops/s</td><td>MSVC cl 14.50 /O2, Windows x64</td></tr>
+<tr><td>final — same_line</td><td>200000</td><td>1.03</td><td>1.38</td><td>3.491</td><td>15.415</td><td>0.92621</td><td>—</td><td>—</td><td>2,224,250,000 ops/s</td><td>MSVC cl 14.50 /O2, Windows x64</td></tr>
+<tr><td>final — separate_lines</td><td>200000</td><td>0.19</td><td>0.22</td><td>0.95</td><td>3.921</td><td>0.190864</td><td>—</td><td>—</td><td>10,378,500,000 ops/s</td><td>MSVC cl 14.50 /O2, Windows x64</td></tr>
+</table>
+<h2>itch_decode</h2>
+<table>
+<tr><th>mode</th><th>samples</th><th>p50 (HDR, ns)</th><th>p99 (HDR, ns)</th><th>p99.9 (HDR, ns)</th><th>p99.99 (HDR, ns)</th><th>mean (ns)</th><th>min (ns)</th><th>max (ns)</th><th>throughput</th><th>measured on</th></tr>
+<tr><td>dev</td><td>900</td><td>16</td><td>18</td><td>47</td><td>61</td><td>16</td><td>16</td><td>61</td><td>61,094,800/s</td><td>MSVC cl 14.50 /O2, Windows x64</td></tr>
+<tr><td>final</td><td>25000</td><td>16</td><td>25</td><td>53</td><td>117</td><td>16</td><td>16</td><td>209</td><td>60,105,000/s</td><td>MSVC cl 14.50 /O2, Windows x64</td></tr>
+</table>
+<h2>json_depth_decode</h2>
+<table>
+<tr><th>mode</th><th>samples</th><th>p50 (HDR, ns)</th><th>p99 (HDR, ns)</th><th>p99.9 (HDR, ns)</th><th>p99.99 (HDR, ns)</th><th>mean (ns)</th><th>min (ns)</th><th>max (ns)</th><th>throughput</th><th>measured on</th></tr>
+<tr><td>dev</td><td>300000</td><td>1,500</td><td>2,901</td><td>8,303</td><td>38,911</td><td>1,551</td><td>1,300</td><td>1,253,900</td><td>621,465/s</td><td>CPython 3.14 stdlib json</td></tr>
+<tr><td>final</td><td>5000000</td><td>1,500</td><td>4,703</td><td>11,407</td><td>48,127</td><td>1,590</td><td>1,300</td><td>2,983,700</td><td>612,803/s</td><td>CPython 3.14 stdlib json</td></tr>
+</table>
+<h2>multicast_publish</h2>
+<table>
+<tr><th>mode</th><th>samples</th><th>p50 (HDR, ns)</th><th>p99 (HDR, ns)</th><th>p99.9 (HDR, ns)</th><th>p99.99 (HDR, ns)</th><th>mean (ns)</th><th>min (ns)</th><th>max (ns)</th><th>throughput</th><th>measured on</th></tr>
+<tr><td>dev</td><td>9000</td><td>2,451</td><td>93,503</td><td>217,599</td><td>415,999</td><td>4,673</td><td>1,847</td><td>442,893</td><td>233,122/s</td><td>MSVC cl 14.50 /O2, Windows x64, loopback multicast</td></tr>
+<tr><td>final</td><td>100000</td><td>2,465</td><td>101,439</td><td>227,071</td><td>375,295</td><td>4,927</td><td>1,701</td><td>716,160</td><td>219,283/s</td><td>MSVC cl 14.50 /O2, Windows x64, loopback multicast</td></tr>
+</table>
+<h2>sbe_decode</h2>
+<table>
+<tr><th>mode</th><th>samples</th><th>p50 (HDR, ns)</th><th>p99 (HDR, ns)</th><th>p99.9 (HDR, ns)</th><th>p99.99 (HDR, ns)</th><th>mean (ns)</th><th>min (ns)</th><th>max (ns)</th><th>throughput</th><th>measured on</th></tr>
+<tr><td>dev</td><td>900</td><td>82</td><td>105</td><td>170</td><td>194</td><td>84</td><td>81</td><td>194</td><td>11,941,000/s</td><td>MSVC cl 14.50 /O2, Windows x64</td></tr>
+<tr><td>final</td><td>25000</td><td>83</td><td>182</td><td>326</td><td>966</td><td>86</td><td>81</td><td>1,923</td><td>11,766,100/s</td><td>MSVC cl 14.50 /O2, Windows x64</td></tr>
+</table>
+<h2>spsc_ring_1p1c</h2>
+<table>
+<tr><th>mode</th><th>samples</th><th>p50 (HDR, ns)</th><th>p99 (HDR, ns)</th><th>p99.9 (HDR, ns)</th><th>p99.99 (HDR, ns)</th><th>mean (ns)</th><th>min (ns)</th><th>max (ns)</th><th>throughput</th><th>measured on</th></tr>
+<tr><td>dev — e2e</td><td>30000000</td><td>48857100.0</td><td>87818200.0</td><td>90701800.0</td><td>90964000.0</td><td>46384200.0</td><td>500</td><td>90964000.0</td><td>—</td><td>MSVC cl 14.50 /O2, Windows x64</td></tr>
+<tr><td>dev — push</td><td>30000</td><td>36</td><td>65</td><td>181</td><td>245</td><td>38.067</td><td>—</td><td>—</td><td>—</td><td>MSVC cl 14.50 /O2, Windows x64</td></tr>
+<tr><td>dev — pop</td><td>6291</td><td>2</td><td>2</td><td>6</td><td>15</td><td>1.55412</td><td>—</td><td>—</td><td>—</td><td>MSVC cl 14.50 /O2, Windows x64</td></tr>
+<tr><td>final — e2e</td><td>250000000</td><td>28524500.0</td><td>72679400.0</td><td>75169800.0</td><td>75563000.0</td><td>31527500.0</td><td>100</td><td>75628500.0</td><td>—</td><td>MSVC cl 14.50 /O2, Windows x64</td></tr>
+<tr><td>final — push</td><td>250000</td><td>48</td><td>73</td><td>188</td><td>291</td><td>47.7576</td><td>—</td><td>—</td><td>—</td><td>MSVC cl 14.50 /O2, Windows x64</td></tr>
+<tr><td>final — pop</td><td>10485</td><td>1</td><td>2</td><td>2</td><td>11</td><td>0.83815</td><td>—</td><td>—</td><td>—</td><td>MSVC cl 14.50 /O2, Windows x64</td></tr>
+</table>
+<p class="note">Anti-cheat rules applied to every case: fresh output per iteration, volatile sink, no memoization; batch sizes are declared in each JSON. See <code>cpp/evidence/</code> for the full evidence trail.</p>
+</body>
+</html>
