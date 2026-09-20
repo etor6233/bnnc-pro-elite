@@ -21,6 +21,13 @@ a shared CI runner is not one. CI therefore proves the suite builds and runs
 on both platforms and publishes the dev JSONs — the final-mode JSONs are
 measured locally and committed (`cpp/bench/benchmarks/bench_*_final*.json`).
 
+## Verified CI run
+
+Branch `latency-elite`, run **35542606468** (2026-09-20): **6/6 jobs green**
+— Rust + Python (Linux, Windows), C++ suites (Linux, Windows), C++ benchmarks
+dev (Linux, Windows). The benchmark artifacts (`benchmark-jsons-*`) are
+downloadable from that run.
+
 ## Static benchmark report for GitHub Pages
 
 - Generator: `cpp/bench/tools/make_pages_report.py` (stdlib-only) — reads
