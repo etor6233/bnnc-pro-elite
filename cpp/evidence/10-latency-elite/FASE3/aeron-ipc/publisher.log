@@ -1,0 +1,5 @@
+Publishing 1000000 messages to aeron:ipc on stream id 1001
+Published 250000 / 1000000
+Published 500000 / 1000000
+Published 750000 / 1000000
+Done sending. Published 1000000 messages.

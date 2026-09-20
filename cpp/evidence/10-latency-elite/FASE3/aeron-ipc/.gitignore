@@ -1,0 +1,6 @@
+# The official jars are downloaded from Maven Central by
+# run_aeron_ipc_demo.ps1 when missing (URLs + SHA-256 pinned in
+# jars_manifest.json), so they are not committed. Compiled classes are
+# rebuilt on every run.
+*.jar
+classes/
