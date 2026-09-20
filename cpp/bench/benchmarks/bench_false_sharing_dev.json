@@ -1,0 +1,19 @@
+{
+  "benchmark": "false_sharing",
+  "mode": "dev",
+  "increments_per_thread_per_rep": 50000000,
+  "repetitions": 3,
+  "batch_size": 10000,
+  "threads": 2,
+  "same_line_best_ops_per_s": 2.10802e+09,
+  "separate_lines_best_ops_per_s": 1.02794e+10,
+  "same_line_best_ns_per_op": 0.948758,
+  "separate_lines_best_ns_per_op": 0.194564,
+  "separate_lines_speedup_vs_same_line": 0.205072,
+  "layout_close": "two uint64_t counters in one 64-byte cache line (false sharing)",
+  "layout_far": "two uint64_t counters, each alignas(64) (disruptor-style padding)",
+  "counters": "volatile uint64_t: per-access memory operations that the optimizer cannot coalesce; identical semantics in both layouts so the delta isolates the cache-line effect",
+  "correctness_gate": "each counter must equal increments_per_thread_per_rep (printed above)",
+  "reference": "LMAX Disruptor cache-line padding pattern, capture commit c871ca49826a",
+  "measured_on": "MSVC cl 14.50 /O2, Windows x64"
+}

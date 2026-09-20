@@ -1,0 +1,23 @@
+{
+  "benchmark": "false_sharing",
+  "mode": "final",
+  "histogram": "bench/hdr_histogram.hpp, HdrHistogram_c semantics (commit 1343a18908c6), 3 sig figs, [1 ps, 1 h], reported in ns",
+  "same_line": {
+    "samples": 200000,
+    "p50_ns": 1.03,
+    "p99_ns": 1.38,
+    "p99.9_ns": 3.491,
+    "p99.99_ns": 15.415,
+    "mean_ns": 0.92621
+  },
+  "separate_lines": {
+    "samples": 200000,
+    "p50_ns": 0.19,
+    "p99_ns": 0.22,
+    "p99.9_ns": 0.95,
+    "p99.99_ns": 3.921,
+    "mean_ns": 0.190864
+  },
+  "speedup_separate_vs_same_p50": 5.42105,
+  "measured_on": "MSVC cl 14.50 /O2, Windows x64"
+}

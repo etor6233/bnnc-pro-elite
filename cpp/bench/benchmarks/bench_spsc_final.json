@@ -1,0 +1,18 @@
+{
+  "benchmark": "spsc_ring_1p1c",
+  "mode": "final",
+  "messages_per_rep": 50000000,
+  "repetitions": 5,
+  "capacity_slots": 1048576,
+  "batch_size": 1000,
+  "best_throughput_msg_per_s": 2.07121e+07,
+  "producer_retries_total": 0,
+  "overflow_policy": "explicit try_push==false on full; producer retries; nothing silently dropped",
+  "push_p50_ns": 48,
+  "push_p99_ns": 73,
+  "pop_p50_ns": 1,
+  "pop_p99_ns": 2,
+  "notes": "push samples include one steady_clock read (enqueue timestamp); pop latency measured on a pre-filled ring with a concurrent feeder thread (no per-item telemetry, occasional empty-ring waits included)",
+  "ring": "net/spsc_ring.hpp (bounded lock-free SPSC, cache-line separated head_/tail_, static_assert-verified)",
+  "measured_on": "MSVC cl 14.50 /O2, Windows x64"
+}
