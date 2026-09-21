@@ -52,7 +52,7 @@ repository `etor6233/bnnc-pro-elite` (branch `main`).
 
 ## PRODUCTION HANDOFF — 2026-09-21 (recorded state before restart)
 
-- Previous continuous run (`hrs-5971e1d2cb41`): **86.4 h healthy** at stop
+- Previous continuous run (`hrs-5971e1d2cb41`): **86.9 h healthy** at stop; the owner stopped it with Ctrl+C (2026-09-21), so NO cooperative `service-terminal.json` was produced — raw data up to the cut is durable (BNRAW/ACKs) but this run has no terminal verdict; leftover elevated processes require an elevated kill (the launcher console must be fully closed so the kill-on-close Job Object terminates the tree).
   decision — journal hash-chain advancing, 23 processes (dual-lane raw +
   live arbitration sidecar), 20 symbol epochs launched/ready, zero raw-lane
   gaps/deaths/silences; 50 typed `OBSERVER_FAILED` events accumulated on the
