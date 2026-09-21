@@ -1,4 +1,4 @@
-# Representative 24-hour raw endurance qualification
+﻿# Representative 24-hour raw endurance qualification
 
 This runbook governs `ENDURANCE_24H` in
 [`CaptureCampaignPolicyV1`](../docs/CAPTURE_CAMPAIGN_POLICY_V1.md). It captures
@@ -18,7 +18,7 @@ entry are absent.
   `target/release/segmented_capture.exe` and
   `target/release/campaign_verify.exe`;
 - executed bytes: verified copies under the run's `sealed-runtime/bin`;
-- terminal Python oracle mínimo: `binance_lob.raw_verify_cli`, executed only
+- terminal Python oracle (minimum): `binance_lob.raw_verify_cli`, executed only
   from the run's sealed source tree.
 
 The old `scripts/run_24h_qualification.ps1` and canonical/feature prototypes are
@@ -190,9 +190,9 @@ requires it. The guardian itself verifies:
 - inventario exacto de los `.py` del verificador en el worktree; caches
   `__pycache__`/`.pyc` del desarrollo no se ejecutan ni integran ese digest;
 - bundle `sealed-runtime` creado con bytes verificados dentro del run: binarios,
-  configuración y árbol Python source-only sin ningún cache; coordinadores y
-  oráculos se ejecutan exclusivamente desde ese bundle;
-- un bloque de entorno hijo allowlist mínimo y sellado:
+  configuration and a Python source-only tree without any cache; coordinators and
+  oracles run exclusively from that bundle;
+- a sealed, minimal child-environment allowlist block:
   `SystemDrive,SystemRoot,TEMP,TMP,WINDIR`; los coordinadores y oracles no
   heredan el entorno completo del usuario. `SystemDrive` evita que componentes
   de Windows expandan `%SystemDrive%` literalmente bajo el directorio de trabajo.
@@ -295,7 +295,7 @@ monotonic regression.
 Cada lectura live congela primero un prefijo exacto del journal; nunca mezcla
 bytes anexados durante el scan. Las sondas de clock, contadores, CIM y red
 tienen deadlines duros, y un watchdog independiente termina el Job si el
-heartbeat del guardián deja de avanzar.
+guardian heartbeat stops advancing.
 
 The watchdog retains one open file identity for the guardian pulse and requires
 newline-complete, strictly increasing byte length within a local monotonic
@@ -346,13 +346,13 @@ Workload-drain origin is the maximum of the two coordinator observation ticks,
 while its final Workload query and watchdog-liveness observation occur after
 both exit publications.
 
-Una salida `COMPLETE` exige además stderr vacío, logs dentro de límites, salida
-limpia exacta de ambos coordinadores (PID, elapsed y código cero), el recibo V3
-que prueba `Workload=0` con el watchdog todavía vivo antes de iniciar los
-oracles, y una relectura final de tamaños/hashes. Cada oracle se asigna a ambos
+A `COMPLETE` exit additionally requires empty stderr, logs within limits, clean
+exact output of both coordinators (PID, elapsed and zero code), the V3 receipt
+proving `Workload=0` with the watchdog still alive before starting the
+oracles, and a final re-read of sizes/hashes. Each oracle is assigned to both
 Jobs y sus descendientes deben drenar el Workload de vuelta a cero, con el
 watchdog vivo. Tras los cuatro oracles, una consulta inmediata vuelve a exigir
-`Workload=0`. Sólo entonces el guardián publica durablemente `STOP`; el watchdog
+`Workload=0`. Only then does the guardian durably publish `STOP`; the watchdog
 sale limpiamente y el Job exterior debe drenar a cero antes de publicar
 `COMPLETE`. La cardinalidad del Job exterior nunca se usa como prueba de
 identidad del watchdog.

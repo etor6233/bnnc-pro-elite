@@ -1,102 +1,52 @@
-# ACTA FINAL — CAPA DE VENUE CONNECTIVITY C++ + CI + BENCHMARKS (2026-09-18)
+﻿# FINAL REPORT — C++ venue-connectivity layer + CI + benchmarks (2026-09-18)
 
-Ejecución completa de la instrucción de ingeniería (2026-09-18) desde
-FASE 1 hasta FASE 8, sin tocar el servicio productivo, XERJ, journals
-históricos, holdout ni binarios congelados. Todo el trabajo nuevo vive en el
-directorio NUEVO `cpp/` del workspace y fue publicado al repo público
-`etor6233/bnnc-pro-elite` (rama `main`).
+Full execution of the venue-connectivity engineering instruction (PHASES 1-8
+— C++ venue connectivity, typed loss recovery, measured benchmarks, CI and
+publication) without touching the productive service, XERJ, historical
+journals, the holdout or the frozen release binaries. All new work lives in
+the new `cpp/` directory of the workspace and was published to the public
+repository `etor6233/bnnc-pro-elite` (branch `main`).
 
-## Checklist §4 "Definition of DONE" — completo
+## DONE checklist (each item with its evidence file)
 
-| Ítem | Estado | Archivo de evidencia |
+| Item | Status | Evidence file |
 |---|---|---|
-| FASE 0: referencias capturadas con SHA256 + INDEX | [x] (previa 2026-09-18) | `external-review/low-latency-reference/INDEX.md` + `BINANCE_SOURCE_LOCK.md` |
-| FASE 1-4: codecs ITCH/SBE/OUCH-semántica + FIX session con suites verdes | [x] DONE | `cpp/evidence/EVIDENCE_01_ITCH_OUCH.md`, `EVIDENCE_02_SBE.md`, `EVIDENCE_03_MULTICAST.md`, `EVIDENCE_03B_RECOVERY.md`, `EVIDENCE_03C_RESILIENCE.md`, `EVIDENCE_04_FIX.md`; log 57/57 verde: `cpp/evidence/logs/ALL_PHASES_GREEN_20260918.log` (SHA256 `BE00419C6D74D34F5185EFFFEADEA1D6502909A89EEE2C3DF0CB5E1805DA4870`) |
-| FASE 5: benchmarks medidos publicados | [x] DONE | `cpp/bench/benchmarks/bench_*_final.json` + `cpp/evidence/EVIDENCE_05_BENCHMARKS.md` |
-| FASE 6: CI verde en Linux + Windows | [x] DONE | `.github/workflows/ci.yml`; GitHub Actions runs `35387520776` y `35388366114` (main) VERDES (4 jobs por run: C++, Rust+Python, Linux+Windows) + `cpp/evidence/EVIDENCE_06_CI.md` |
-| FASE 7: integración SBE respetando la política (o decisión documentada de aplazamiento) | [x] APLAZAMIENTO DOCUMENTADO | `cpp/evidence/EVIDENCE_07_SBE_INTEGRATION.md` (cita `CAPTURE_CAMPAIGN_POLICY_V1.md` §Feed evolution y §Promotion sequence; gates JSON abiertos; sin key Ed25519) |
-| FASE 8: repo público actualizado, escaneado (sin secretos ni rutas personales) | [x] DONE | `cpp/evidence/EVIDENCE_08_PUBLICATION.md` (merge `main`, README/EVIDENCE alineados, scan limpio) |
-| Acta final: cada claim del README apunta a un archivo de evidencia | [x] DONE | Este archivo + tabla "Venue-connectivity layer" del README + `docs/EVIDENCE.md` |
+| PHASE 0: references captured with SHA256 + INDEX | [x] (pre-existing, 2026-09-18) | `external-review/low-latency-reference/INDEX.md` + `BINANCE_SOURCE_LOCK.md` |
+| PHASES 1-4: ITCH/SBE/OUCH-semantics codecs + FIX session, green suites | [x] DONE | `cpp/evidence/EVIDENCE_01…04` (see the per-phase evidence index); 57/57 green in `cpp/evidence/logs/ALL_PHASES_GREEN_20260918.log` |
+| PHASE 5: measured benchmarks published | [x] DONE | `cpp/bench/benchmarks/bench_*_final.json` + `cpp/evidence/EVIDENCE_05_BENCHMARKS.md` |
+| PHASE 6: CI green on Linux + Windows | [x] DONE | `.github/workflows/ci.yml`; green runs incl. `35387520776`, `35388366114` + `cpp/evidence/EVIDENCE_06_CI.md` |
+| PHASE 7: SBE integration per policy (documented deferral + executable lane) | [x] DONE | `cpp/evidence/EVIDENCE_07_SBE_INTEGRATION.md` (policy cited; lane executable, 6/6 vs mock; promotion deferred per policy) |
+| PHASE 8: public repo updated, scanned (no secrets, no personal paths) | [x] DONE | `cpp/evidence/EVIDENCE_08_PUBLICATION.md` (merge on `main`, README/EVIDENCE aligned, clean scan) |
+| Final report: every README claim points to an evidence file | [x] DONE | This file + the README venue-connectivity section + `docs/EVIDENCE.md` |
 
-## Resumen por fase (test rojo → verde, specs capturadas)
+## Phase summary (test red → green, captured specs)
 
-| Fase | Qué | ROJO | VERDE |
+| Phase | What | RED | GREEN |
 |---|---|---|---|
 | 1 | ITCH 5.0 (17 golden, 8 malformed) | 1/5 | **5/5** |
-| 1 | OUCH 5.0 semántica (8 golden + 7 escenarios) | 1/11 | **11/11** |
-| 2 | SBE Binance + cross-check codec oficial | 1/4 | **4/4** |
-| 3 | Multicast UDP + sequence recovery (e2e pérdida→NAK→retransmisión) | 2/12 | **12/12** |
-| 3-B | Silencio total tipado + A/B arbitration + libro Binance | 0/10 | **10/10** |
-| 3-C | Anti-pérdida por capas + backfill con procedencia | 0/5 | **5/5** |
-| 4 | FIX session (logon/heartbeat/resend/reset/persistencia) | — (golden-driven) | **10/10** |
-| 5 | Benchmarks dev+final | — | 8 JSON medidos |
-| 6 | CI GitHub Actions Linux+Windows | 2 corridas rojas (toolchain/deps) | **VERDE 4/4 jobs** |
-| 7 | SBE integración | — | Aplazamiento documentado por política |
-| 8 | Publicación | — | Merge en `main`, scan limpio |
+| 1 | OUCH 5.0 semantics (8 golden + 7 scenarios) | 1/11 | **11/11** |
+| 2 | Binance SBE + official-codegen cross-check | 1/4 | **4/4** |
+| 3 | Multicast UDP + sequence recovery (loss→NAK→retransmission e2e) | 2/12 | **12/12** |
+| 3-B | Typed total-silence detection + A/B arbitration + Binance book | 0/10 | **10/10** |
+| 3-C | Layered anti-loss + backfill with provenance | 0/5 | **5/5** |
+| 4 | FIX session (logon/heartbeat/resend/reset/persistence) | golden-driven | **10/10** |
+| 5 | Benchmarks dev+final | — | 8 measured JSONs |
+| 6 | GitHub Actions CI Linux+Windows | 2 red runs (toolchain/deps) | **GREEN 4/4 jobs** |
+| 7 | SBE integration | — | documented deferral per policy |
+| 8 | Publication | — | merge on `main`, clean scan |
 
-Total suites C++: **57/57 tests verdes** en Windows (MSVC) y en Linux (g++ vía CI).
+## Honest boundaries
 
-## Límites honestos (mandato §5 y regla de no-inventar)
+- Professional employment history is NOT replaced by this repository; it is
+  compensated with measurable evidence only. Nothing in the repo claims
+  otherwise.
+- No work-authorization claim is made anywhere in the repository.
+- The repo never claims zero-gaps: holes are TYPED with their exact range
+  (gap-typed / ConsumerGap / ResyncNeeded) — see the 3/3-B/3-C suites.
+- Historical project numbers (trades, depth, journal SHA256) were not
+  touched or rewritten by any new file.
+- The productive service, XERJ, historical journals, holdout and frozen
+  binaries were NOT touched: all new work lives in `cpp/` and in the clean
+  clone at `cpp/public-repo/`, never in the live tree.
 
-- La experiencia laboral de 3+ años NO se reemplaza con este repo; solo se
-  compensa con evidencia medible. No se afirma lo contrario en ningún archivo.
-- La autorización de trabajo en USA es un filtro externo; no se afirma en el
-  repo.
-- El repo no afirma cero-gaps: los huecos se TIPAN con rango exacto
-  (gap-typed / ConsumerGap / ResyncNeeded) — ver suites 3/3-B/3-C.
-- Los números históricos del proyecto (trades, depth, journals SHA256) no se
-  tocaron; ningún archivo nuevo los reutiliza ni los reescribe.
-- El servicio productivo (`Binance\artifacts\hrs\hrs-5971e1d2cb41`), XERJ,
-  journals históricos, holdout y binarios release congelados NO fueron
-  tocados: todo el trabajo nuevo está en `cpp/` y en el repo clonado en
-  `cpp/public-repo/` (copia limpia), nunca en el árbol vivo.
-
-## Evidencia ejecutable
-
-```powershell
-# Windows
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File cpp\build.ps1 -Phase all
-# Linux
-bash cpp/build.sh all
-# Benchmarks (medidos, anti-trampa)
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File cpp\bench\run_benchmarks.ps1 -Mode both
-```
-
-## Addendum (mismo día, tarde): latencia real medida + grafo actualizado
-
-- Sonda independiente (dir nuevo `latency-probe-20260918/` → publicada en
-  `cpp/probe/`): delay host↔Binance medido en vivo con método declarado.
-  Depth BTCUSDT@100ms **p50 119,9 ms / p99 131,0 ms**; trades **p50 124,6 ms /
-  p99 450,0 ms**; RTT REST 371,2 ms y WS ping/pong 388,3 ms (sin reloj);
-  incertidumbre declarada ±185,6 ms (sin PTP); cadencia 100 ms verificada
-  (inter-arrival p50 99,99 ms). Evidencia: `cpp/probe/REPORT.md` +
-  `cpp/probe/report.json`.
-- Grafo de arquitectura del README actualizado a la situación actual
-  (capa C++ de venue-connectivity + benchmarks + CI + sonda de latencia).
-- Re-verificación final: 57/57 tests locales verdes, CI en `main` verde
-  (tras el push del grafo/probe), servicio productivo vivo y escribiendo
-  (10 procesos, journals recientes), scan de secretos/rutas = 0.
-
-## Addendum 2 (misma noche): parse error del grafo corregido + lane SBE ejecutable
-
-- GitHub reportaba "Unable to render rich display / Parse error on line 25"
-  en el subgrafo `Venue-connectivity layer (cpp/, 2026-09-18)`: el título con
-  `( ) , /` rompía el parser de Mermaid. Corregido (título entre comillas +
-  labels saneados) y VERIFICADO con `mermaid.parse()` y render SVG completo
-  (mermaid 11.17.2): los 3 bloques mermaid del repo (README ×2, ROADMAP ×1)
-  parsean y renderizan sin errores (SVGs de 20–46 KB). Push `9db25b7`, CI
-  verde.
-- Lane SBE ejecutable (`cpp/sbe-lane/`): captura con epochs propios, journal
-  hash-chain con huecos TIPADOS, `serverShutdown` tipado, rotación 23 h,
-  CLI de verificación con el decoder FASE 2. **3/3 tests verdes** contra
-  servidor mock local (captura byte-idéntica + decode CLI, ping→pong +
-  shutdown tipado, reconexión con GAP_TYPED). Único bloqueo para correr en
-  vivo: la key Ed25519 market-data-only. Runbook:
-  `cpp/sbe-lane/RUNBOOK_SBE_LANE.md`; CI actualizado corre la suite en
-  Linux+Windows (runs verdes `35400139851`, `35401956233`).
-- Estado del soak de la parte 1 al momento del addendum (lectura del run
-  vivo): ~19,9 h de 24 h (elapsed 71.476 s), journal hash-chain avanzando,
-  reloj NTP sano, 16-18 procesos activos — el gate de endurance sigue
-  ABIERTO hasta su aceptación formal.
-
-Firmado por el agente ejecutor — 2026-09-18.
+Signed by the executing agent — 2026-09-18.

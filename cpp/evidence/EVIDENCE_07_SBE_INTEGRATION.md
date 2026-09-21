@@ -1,30 +1,33 @@
-# EVIDENCIA — FASE 7: Integración SBE según política
+﻿# EVIDENCE — PHASE 7: SBE integration per policy
 
-**Estado: LANE EJECUTABLE como candidata paralela; PROMOCIÓN aplazada por
-política (permitido por el mandato §4: "decisión documentada de
-aplazamiento").** Fecha: 2026-09-18.
+**Status: LANE EXECUTABLE as a parallel candidate; PROMOTION deferred by
+policy (allowed by the mandate: "documented deferral decision").** Date:
+2026-09-18/19.
 
-## Lo nuevo (2026-09-18, tarde): la lane corre — solo falta la key
+## The lane runs — only the key was needed (and it worked)
 
-- `cpp/sbe-lane/sbe_lane.py`: captura SBE con epochs PROPIOS (nunca fusiona
-  con JSON), journal hash-chain (SHA-256), huecos TIPADOS entre conexiones
-  (`GAP_TYPED` con rango de pared exacto), `serverShutdown` tipado,
-  rotación preventiva a 23 h, key Ed25519 via header `X-MBX-APIKEY` (nunca se
-  escribe en disco).
-- `cpp/sbe-lane/sbe_decode_cli.cpp`: CLI de verificación que decodifica los
-  frames capturados con el decoder FASE 2 (schema pineado `6EA32846…`).
-- Tests rojo→verde `cpp/sbe-lane/tests/test_sbe_lane.py`: **3/3 verdes** contra
-  un servidor mock local que sirve los golden del encoder oficial —
-  (1) captura byte-idéntica + journal válido + decode CLI exacto
-  (template ids 10000/10003/10001), (2) ping→pong + `serverShutdown` tipado,
-  (3) reconexión con `GAP_TYPED`. Sin key real: el único bloqueo externo para
-  correr en vivo es la key Ed25519.
-- Runbook: `cpp/sbe-lane/RUNBOOK_SBE_LANE.md` (compilar, probar, correr en
-  vivo, verificar). CI: la suite de la lane corre en Linux+Windows.
+- `cpp/sbe-lane/sbe_lane.py`: SBE capture with its OWN epochs (never merged
+  with JSON), SHA-256 hash-chained journal, TYPED holes between connections
+  (`GAP_TYPED` with the exact wall range), typed `serverShutdown`, preventive
+  rotation at 23 h, Ed25519 key via the `X-MBX-APIKEY` header (never written
+  to disk).
+- `cpp/sbe-lane/sbe_decode_cli.cpp`: verification CLI decoding captured
+  frames with the PHASE 2 decoder (pinned schema `6EA32846…`); `--summary`
+  mode counts per template for multi-million-frame captures.
+- Red-green tests `cpp/sbe-lane/tests/test_sbe_lane.py`: **6/6 green** against
+  a local mock server serving the official-encoder goldens — (1) byte-identical
+  capture + valid journal + exact CLI decode, (2) ping→pong + typed
+  `serverShutdown`, (3) reconnect with `GAP_TYPED`, (4) measure-script math,
+  (5) API key sent as `X-MBX-APIKEY` and never on disk, (6) `--summary` mode.
+- **Live campaign executed**: the user's API key validated (`ACCEPTED_101`);
+  23 h cycle with 13,253,624 frames, 0 typed gaps, full decode 100% OK —
+  see `EVIDENCE_09_LIVE_SBE_CAMPAIGN.md`.
+- Runbook: `cpp/sbe-lane/RUNBOOK_SBE_LANE.md` (build, test, run live,
+  verify). CI runs the lane suite on Linux+Windows.
 
-## La política aplicable
+## The applicable policy
 
-`Binance/docs/CAPTURE_CAMPAIGN_POLICY_V1.md` §Feed evolution (líneas 256-263):
+`Binance/docs/CAPTURE_CAMPAIGN_POLICY_V1.md` "Feed evolution" (lines 256-263):
 
 > JSON `depth@100ms` plus individual `trade` remains the correctness oracle.
 > Once the continuous JSON collector passes its gates, SBE `depth` at 20 ms and
@@ -34,38 +37,39 @@ aplazamiento").** Fecha: 2026-09-18.
 > latency/CPU measurement, recovery tests and an explicit compatibility
 > decision.
 
-Y §Promotion sequence ítem 8: "only then consider SBE promotion and economic
-feature/model gates" — después de los gates 1-7 del JSON.
+And "Promotion sequence" item 8: "only then consider SBE promotion and
+economic feature/model gates" — after JSON gates 1-7.
 
-## Estado real vs precondiciones de la política
+## Real state vs policy preconditions
 
-| Precondición de la política | Estado observado | Consecuencia |
+| Policy precondition | Observed state | Consequence |
 |---|---|---|
-| JSON collector continuo con gates pasados (ítems 1-7) | El servicio productivo `hrs-5971e1d2cb41` (soak 24 h) está CORRIENDO; el gate de endurance aún no está aceptado | La PROMOCIÓN de SBE sigue aplazada |
-| Clave Ed25519 market-data-only separada | El usuario no la proveyó (la spec SBE oficial exige API key Ed25519 en header `X-MBX-APIKEY`) | Único bloqueo para CORRER la lane en vivo |
-| JSON y SBE con epochs/versiones de dataset independientes | Implementado: `cpp/sbe-lane/` escribe epochs propios (`sbe-…`) y nunca toca los árboles JSON | Cumplido por construcción |
-| Comparación semántica exacta, medición de latencia/CPU, tests de recuperación | COMPLETADOS: decoder FASE 2 cross-check oficial, benchmarks FASE 5 (83 ns p50), recovery FASE 3-B/3-C, lane 3/3 vs mock | Pre-condiciones técnicas cubiertas |
+| Continuous JSON collector with passed gates (items 1-7) | The productive service (24 h+ soak) is RUNNING; the endurance gate acceptance remains the project's own step | SBE PROMOTION stays deferred |
+| Separate Ed25519 market-data-only key | PROVIDED by the owner; venue accepted it (101) | Lane RUNS live |
+| JSON and SBE with independent epochs/dataset versions | Implemented: `cpp/sbe-lane/` writes its own epochs (`sbe-…`) and never touches JSON trees | Met by construction |
+| Exact semantic comparison, latency/CPU measurement, recovery tests | COMPLETED: PHASE 2 decoder cross-checked against the official codegen, PHASE 5 benchmarks (83 ns p50, p99.99 966 ns), PHASE 3-B/3-C recovery, lane 6/6 vs mock | Technical preconditions covered |
 
-## Qué SÍ está listo (y dónde está la evidencia)
+## What is ready (and where the evidence is)
 
-- Decoder SBE del schema pineado con golden del encoder oficial: `cpp/sbe/`
+- SBE decoder for the pinned schema with official-encoder goldens: `cpp/sbe/`
   (EVIDENCE_02_SBE.md).
-- **Lane SBE ejecutable**: `cpp/sbe-lane/` con captura, journal tipado,
-  verificación CLI y 3/3 tests verdes contra mock local
-  (`cpp/sbe-lane/RUNBOOK_SBE_LANE.md`).
-- Benchmarks de decode SBE (FASE 5) y recovery SBE→libro (FASE 3-B).
+- **Executable SBE lane**: `cpp/sbe-lane/` with capture, typed journal,
+  verification CLI and 6/6 green tests against a local mock
+  (`RUNBOOK_SBE_LANE.md`).
+- SBE decode benchmarks (PHASE 5) and SBE→book recovery (PHASE 3-B).
+- **Live 23 h campaign with full decode verification**
+  (EVIDENCE_09_LIVE_SBE_CAMPAIGN.md).
 
-## Decisión
+## Decision
 
-- **CORRER la lane**: habilitado en cuanto exista la key Ed25519
-  market-data-only (comando exacto en `RUNBOOK_SBE_LANE.md`). La lane corre
-  como candidata paralela con epochs independientes — eso es exactamente lo
-  que permite la política.
-- **PROMOVER SBE a camino canónico**: aplazado hasta que el gate de endurance
-  del JSON pase y se complete la secuencia de promoción (comparación
-  semántica exacta, medición, recovery, decisión explícita).
+- **RUN the lane**: enabled once the key exists — executed and verified
+  (EVIDENCE_09). The lane runs as a parallel candidate with independent
+  epochs — exactly what the policy allows.
+- **PROMOTE SBE to a canonical path**: deferred until the JSON endurance
+  gate passes and the promotion sequence completes (exact semantic
+  comparison, measurement, recovery, explicit decision).
 
-Criterios medibles de aceptaci�n de una corrida (cadencia real, cero
-corrupci�n, journal �ntegro, delay punta a punta, igualdad sem�ntica vs JSON
-en ventana solapada, rotaci�n 23 h): \cpp/sbe-lane/RUNBOOK_SBE_LANE.md\
-secci�n "C�mo decidimos si la corrida es perfecta".
+Measurable acceptance criteria for a run (cadence, zero corruption, journal
+integrity, end-to-end delay, semantic equality vs JSON on the overlap
+window, 23 h rotation): `cpp/sbe-lane/RUNBOOK_SBE_LANE.md`, section "How we
+decide a run is perfect".

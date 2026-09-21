@@ -1,0 +1,166 @@
+== regenerating itch vectors (C:\Users\NL\Desktop\NEW BINANCE\cpp\public-repo\cpp\itch\tools\make_itch_golden.py) ==
+golden sys_event_O: 12 bytes (ITCH 1.1 + event codes p.5)
+golden sys_event_C: 12 bytes (ITCH 1.1 + event codes p.5)
+golden add_order_buy: 36 bytes (ITCH 1.3.1)
+golden add_order_sell: 36 bytes (ITCH 1.3.1)
+golden add_order_max_price: 36 bytes (ITCH 1.3.1 + Data Types p.4)
+golden add_order_mpid: 40 bytes (ITCH 1.3.2)
+golden executed: 31 bytes (ITCH 1.4.1)
+golden executed_price_printable: 36 bytes (ITCH 1.4.2)
+golden executed_price_nonprintable: 36 bytes (ITCH 1.4.2)
+golden cancel_partial: 23 bytes (ITCH 1.4.3)
+golden delete_order: 19 bytes (ITCH 1.4.4)
+golden replace_order: 35 bytes (ITCH 1.4.5)
+golden trade_non_cross: 44 bytes (ITCH 1.5.1)
+golden cross_trade_open: 40 bytes (ITCH 1.5.2)
+golden broken_trade: 19 bytes (ITCH 1.5.3)
+golden trading_action_t: 25 bytes (ITCH 1.2.2 + Appendix C)
+golden stock_directory: 39 bytes (ITCH 1.2.1 + Appendix D/E)
+manifest written
+== regenerating itch vectors (C:\Users\NL\Desktop\NEW BINANCE\cpp\public-repo\cpp\itch\tools\make_itch_malformed.py) ==
+malformed truncated_empty: 0 bytes -> Truncated (0 bytes, shorter than any message)
+malformed truncated_type_only: 1 bytes -> Truncated (type byte only)
+malformed truncated_add_35: 35 bytes -> Truncated (Add Order is 36 bytes (spec 1.3.1))
+malformed truncated_system_event_5: 5 bytes -> Truncated (System Event is 12 bytes (spec 1.1))
+malformed unknown_type_z: 35 bytes -> UnknownType (type byte 'Z' is not defined by the captured spec tables)
+malformed price_over_max_add: 36 bytes -> PriceOutOfRange (price 200,000.0001 > max 200,000.0000 (spec p.4))
+malformed price_over_max_trade: 44 bytes -> PriceOutOfRange (price overflow in Trade (Non-Cross), spec max p.4)
+malformed truncated_replace_20: 20 bytes -> Truncated (Order Replace is 35 bytes (spec 1.4.5))
+manifest written
+
+[PASS] golden_vectors_decode_exactly
+[PASS] malformed_corpus_rejected_without_crash
+[PASS] random_mutations_never_crash
+[PASS] explicit_endian_and_fixed_point
+[PASS] max_price_boundary
+== 5 passed, 0 failed, 5 total ==
+golden trades_stream.bin: 90 bytes
+golden best_bid_ask.bin: 66 bytes
+golden depth_snapshot.bin: 106 bytes
+golden depth_diff.bin: 82 bytes
+== regenerating sbe vectors (C:\Users\NL\Desktop\NEW BINANCE\cpp\public-repo\cpp\sbe\tools\make_sbe_malformed.py) ==
+malformed empty: 0 bytes -> Truncated (0 bytes: shorter than the 8-byte message header)
+malformed header_only: 8 bytes -> Truncated (message header without any root field bytes)
+malformed truncated_root_fields: 20 bytes -> Truncated (cut inside the root block (blockLength=18))
+malformed truncated_group: 38 bytes -> Truncated (cut inside the trades group entries)
+malformed truncated_var_string: 62 bytes -> Truncated (varString8 length byte claims more bytes than the buffer holds)
+malformed unknown_template: 26 bytes -> UnknownTemplate (templateId 9999 is not in the pinned schema (ids 10000..10003))
+malformed schema_mismatch: 8 bytes -> SchemaMismatch (schemaId 2 != pinned schemaId 1)
+malformed version_mismatch: 8 bytes -> SchemaMismatch (version 1 != pinned version 0)
+malformed huge_group_count: 65 bytes -> Truncated (numInGroup=1000000 cannot fit in the buffer)
+malformed bad_block_length: 68 bytes -> InvalidLayout (blockLength 0 is smaller than the BestBidAskStreamEvent root fields)
+malformed bad_group_block_length: 65 bytes -> InvalidLayout (trades group blockLength 10 < 25 (schema layout))
+manifest written
+
+[PASS] golden_vectors_decode_and_match_official
+[PASS] malformed_corpus_rejected_without_crash
+[PASS] random_mutations_never_crash
+[PASS] constant_field_is_best_match
+== 4 passed, 0 failed, 4 total ==
+== regenerating ouch vectors (C:\Users\NL\Desktop\NEW BINANCE\cpp\public-repo\cpp\ouch\tools\make_ouch_golden.py) ==
+golden inbound_enter: 47 bytes (OUCH 2.1)
+golden inbound_replace: 40 bytes (OUCH 2.2)
+golden inbound_cancel: 11 bytes (OUCH 2.3)
+golden outbound_accepted: 64 bytes (OUCH 3.2)
+golden outbound_replaced: 68 bytes (OUCH 3.3)
+golden outbound_canceled: 20 bytes (OUCH 3.4)
+golden outbound_executed: 36 bytes (OUCH 3.6)
+golden outbound_rejected: 31 bytes (OUCH 3.8 + Appendix D)
+manifest written
+
+[PASS] golden_vectors_decode_exactly
+[PASS] userref_strictly_increasing_duplicates_ignored
+[PASS] enter_quantity_bounds
+[PASS] replace_outcome_silently_ignored_ref_reusable
+[PASS] replace_outcome_cancel_takeout
+[PASS] replace_outcome_rejected_ref_consumed
+[PASS] replace_chain_liability_spec_33_examples
+[PASS] execution_in_flight_on_original_ref
+[PASS] cancel_semantics
+[PASS] encoder_matches_golden_bytes
+[PASS] random_mutations_never_crash
+== 11 passed, 0 failed, 11 total ==
+
+[PASS] frame_roundtrip_and_integrity
+[PASS] assembler_in_order_delivery
+[PASS] assembler_gap_detection_exact_range
+[PASS] assembler_retransmission_recovery
+[PASS] assembler_duplicate_dropped
+[PASS] assembler_reorder_gap_then_recovery
+[PASS] assembler_snapshot_bridging
+[PASS] assembler_sequence_wraparound
+[PASS] multicast_join_leave_receive
+[PASS] multicast_loss_retransmission_e2e
+[PASS] spsc_ring_basic_and_overflow_explicit
+[PASS] spsc_ring_concurrent_producer_consumer
+== 12 passed, 0 failed, 12 total ==
+
+[PASS] cadence_exchange_silent_within_declared_deadline
+[PASS] cadence_transport_dead_immediate
+[PASS] cadence_server_shutdown_typed
+[PASS] watchdog_ping_pong_deadline_5s
+[PASS] total_silence_failover_typed_hole
+[PASS] ab_arbitration_loss_on_a_covered_by_b
+[PASS] dual_loss_consumer_gap_and_snapshot_bridge
+[PASS] book_diff_continuity_and_resync
+[PASS] sbe_depth_diff_to_book_integration
+[PASS] anticipation_signals_measured
+== 10 passed, 0 failed, 10 total ==
+
+[PASS] dual_path_source_duplication_no_loss
+[PASS] kill_entire_live_path_rest_backfill_recovers_all
+[PASS] cache_layer_serves_first_then_rest_backfill
+[PASS] unrecoverable_window_typed_gap_exact_range
+[PASS] journal_hashes_bind_every_record
+== 5 passed, 0 failed, 5 total ==
+== regenerating fix vectors (C:\Users\NL\Desktop\NEW BINANCE\cpp\public-repo\cpp\fix\tools\make_fix_golden.py) ==
+golden logon: 88 bytes (MARKET_MICROSTRUCTURE �5.5 + QuickFIX layout)
+golden heartbeat: 76 bytes (MARKET_MICROSTRUCTURE �5.5 + QuickFIX layout)
+golden resend_request: 85 bytes (MARKET_MICROSTRUCTURE �5.5 + QuickFIX layout)
+golden sequence_reset_gapfill: 88 bytes (MARKET_MICROSTRUCTURE �5.5 + QuickFIX layout)
+golden new_order_single: 129 bytes (MARKET_MICROSTRUCTURE �5.5 + QuickFIX layout)
+golden possdup_retransmission: 120 bytes (MARKET_MICROSTRUCTURE �5.5: same MsgSeqNum + PossDup=Y)
+manifest written
+
+fix-test-main-start argc=2
+[PASS] golden_vectors_parse_exactly
+[PASS] malformed_rejected_with_typed_status
+[PASS] build_then_parse_roundtrip
+[PASS] logon_handshake_both_sides
+[PASS] heartbeat_and_test_request
+[PASS] gap_detection_resend_request_possdup_retransmission
+[PASS] sequence_reset_gapfill_skips
+[PASS] sequence_persistence_across_reconnect
+[PASS] malformed_inbound_dropped_and_counted
+[PASS] possdup_duplicate_ignored
+== 10 passed, 0 failed, 10 total ==
+fix-test-done rc=0
+
+[PASS] known_values_exact_percentiles
+[PASS] single_value_all_percentiles
+[PASS] empty_histogram_returns_zero
+[PASS] percentile_monotonicity
+[PASS] record_bounds
+[PASS] min_max_semantics
+[PASS] constructor_validation
+[PASS] count_at_value
+[PASS] reset_clears
+[PASS] large_values_do_not_overflow
+== 10 passed, 0 failed, 10 total ==
+
+[PASS] cache_line_separation_runtime_probe
+[PASS] capacity_rounds_to_power_of_two
+[PASS] fifo_order
+[PASS] explicit_overflow_no_silent_drop
+[PASS] empty_pop_returns_false
+[PASS] size_wraparound
+[PASS] single_slot_capacity
+== 7 passed, 0 failed, 7 total ==
+corpus log_uniform: 100000 values, PASS
+corpus spikes: 100000 values, PASS
+corpus heavy_tail: 100000 values, PASS
+corpus uniform_small: 50000 values, PASS
+report: C:\Users\NL\Desktop\NEW BINANCE\cpp\public-repo\cpp\bench\tools\crosscheck_report.json
+evidence copy: C:\Users\NL\Desktop\NEW BINANCE\cpp\public-repo\cpp\evidence\10-latency-elite\PHASE1\crosscheck_report.json
+verdict: PASS
+== ALL PHASES GREEN ==

@@ -1,0 +1,14 @@
+make_sbe_golden.cpp
+C:\Users\NL\Desktop\NEW BINANCE\cpp\public-repo\cpp\tools\sbe-tool\gen\spot_stream\MessageHeader.h(224): warning C4245: 'return': conversión de 'int' en 'uint16_t'; no coinciden signed/unsigned
+C:\Users\NL\Desktop\NEW BINANCE\cpp\public-repo\cpp\tools\sbe-tool\gen\spot_stream\MessageHeader.h(287): warning C4245: 'return': conversión de 'int' en 'uint16_t'; no coinciden signed/unsigned
+C:\Users\NL\Desktop\NEW BINANCE\cpp\public-repo\cpp\tools\sbe-tool\gen\spot_stream\MessageHeader.h(350): warning C4245: 'return': conversión de 'int' en 'uint16_t'; no coinciden signed/unsigned
+C:\Users\NL\Desktop\NEW BINANCE\cpp\public-repo\cpp\tools\sbe-tool\gen\spot_stream\MessageHeader.h(413): warning C4245: 'return': conversión de 'int' en 'uint16_t'; no coinciden signed/unsigned
+C:\Users\NL\Desktop\NEW BINANCE\cpp\public-repo\cpp\tools\sbe-tool\gen\spot_stream\GroupSizeEncoding.h(224): warning C4245: 'return': conversión de 'int' en 'uint16_t'; no coinciden signed/unsigned
+C:\Users\NL\Desktop\NEW BINANCE\cpp\public-repo\cpp\tools\sbe-tool\gen\spot_stream\GroupSizeEncoding.h(287): warning C4245: 'return': conversión de 'int' en 'uint16_t'; no coinciden signed/unsigned
+C:\Users\NL\Desktop\NEW BINANCE\cpp\public-repo\cpp\tools\sbe-tool\gen\spot_stream\VarString8.h(175): warning C4245: 'return': conversión de 'int' en 'uint64_t'; no coinciden signed/unsigned
+C:\Users\NL\Desktop\NEW BINANCE\cpp\public-repo\cpp\tools\sbe-tool\gen\spot_stream\VarString8.h(224): warning C4245: 'return': conversión de 'int' en 'uint16_t'; no coinciden signed/unsigned
+C:\Users\NL\Desktop\NEW BINANCE\cpp\public-repo\cpp\tools\sbe-tool\gen\spot_stream\VarString8.h(287): warning C4245: 'return': conversión de 'int' en 'uint16_t'; no coinciden signed/unsigned
+C:\Users\NL\Desktop\NEW BINANCE\cpp\public-repo\cpp\tools\sbe-tool\gen\spot_stream\VarString8.h(322): warning C4245: 'return': conversión de 'int' en 'size_t'; no coinciden signed/unsigned
+C:\Users\NL\Desktop\NEW BINANCE\cpp\public-repo\cpp\tools\sbe-tool\gen\spot_stream\GroupSize16Encoding.h(224): warning C4245: 'return': conversión de 'int' en 'uint16_t'; no coinciden signed/unsigned
+C:\Users\NL\Desktop\NEW BINANCE\cpp\public-repo\cpp\tools\sbe-tool\gen\spot_stream\GroupSize16Encoding.h(287): warning C4245: 'return': conversión de 'int' en 'uint16_t'; no coinciden signed/unsigned
+C:\Users\NL\Desktop\NEW BINANCE\cpp\public-repo\cpp\tools\sbe-tool\gen\spot_stream/TradesStreamEvent.h(958): warning C4244: 'inicializando': conversión de 'const spot_stream::BoolEnum::Value' a 'uint8_t'; posible pérdida de datos

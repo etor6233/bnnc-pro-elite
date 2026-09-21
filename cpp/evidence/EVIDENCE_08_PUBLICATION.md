@@ -1,33 +1,34 @@
-# EVIDENCIA — FASE 8: Publicación y evidencia final
+# EVIDENCE — PHASE 8: Publication and final evidence
 
-**Estado: DONE.** Fecha: 2026-09-18.
+**Status: DONE.** Date: 2026-09-18 (updated 2026-09-19).
 
-## Qué se publicó
+## What was published
 
-- Repo público `etor6233/bnnc-pro-elite`, rama `main` (historial limpio,
-  ver `git log` en el repo):
-  - código nuevo C++ completo en `cpp/` (ITCH/OUCH/SBE/FIX/multicast/
-    recovery/resilience/bench) con golden/malformed vectors y generadores;
-  - benchmarks medidos `cpp/bench/benchmarks/*.json`;
-  - CI `.github/workflows/ci.yml` (verde, run `35387520776`);
-  - `README.md` con la sección "Venue-connectivity layer (C++, 2026-09-18)"
-    donde CADA claim apunta a un archivo de evidencia dentro del repo;
-  - `docs/EVIDENCE.md` extendido con la tabla de claims nuevos.
+- Public repository `etor6233/bnnc-pro-elite`, branch `main` (clean history,
+  see `git log` in the repo):
+  - the complete new C++ code in `cpp/` (ITCH/OUCH/SBE/FIX/multicast/
+    recovery/resilience/bench) with golden/malformed vectors and generators;
+  - measured benchmarks `cpp/bench/benchmarks/*.json` (incl. HDR percentiles);
+  - CI `.github/workflows/ci.yml` (green, latest 6/6 run `35542606468`);
+  - `README.md` with the venue-connectivity layer section where EVERY claim
+    points to an evidence file inside the repo;
+  - `docs/EVIDENCE.md` extended with the new claim table.
 
-## Verificaciones exigidas
+## Required verifications
 
-- Repo renderizado: SÍ (markdown de README/EVIDENCE validado por GitHub).
-- Links de evidencia OK: todos los enlaces de la sección nueva apuntan a
-  archivos existentes en el repo (verificado con `git ls-files`).
-- Cero rutas personales: SÍ — scan `C:\Users\NL|NLuciani|C:\Users` sobre
-  `cpp/**`, workflow y README: 0 coincidencias.
-- Cero secretos: SÍ — scan de tokens `gho_*`, claves API, `AKIA`,
-  `BEGIN (RSA|EC|OPENSSH)` sobre el mismo conjunto: 0 coincidencias.
-- No se publicaron: árbol vivo del servicio, journals históricos, holdout,
-  binarios congelados, claves de la cuenta (el repo no contiene credenciales
-  ni material de cuentas).
+- Repo renders: YES (README/EVIDENCE markdown validated by GitHub).
+- Evidence links OK: every relative link of the new sections resolves to an
+  existing file in the repo (verified with `git ls-files`).
+- Zero personal paths: YES — the publication scan over the whole repo finds
+  no personal user-profile paths.
+- Zero secrets: YES — scan for API tokens, key literals and private-key
+  markers over the same set: 0 matches (the scan script itself lives at
+  `cpp/evidence/10-latency-elite/PHASE6/scan_publication.ps1`).
+- Not published: the live service tree, historical journals, holdout, frozen
+  binaries, account credentials (the repo contains no credentials).
 
-## Honestidad §5 de la instrucción
+## Honesty (§5 of the project contract)
 
-- El repo compensa con evidencia medible; no afirma 3+ años de experiencia
-  laboral ni autorización de trabajo en USA. Ningún texto nuevo lo afirma.
+- The repo compensates with measurable evidence; it does not claim
+  professional employment history nor work authorization in any country. No
+  text in the repo makes such claims.

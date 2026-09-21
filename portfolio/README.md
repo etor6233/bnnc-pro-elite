@@ -81,7 +81,7 @@ test-red → implementation → test-green discipline:
 - **Aeron IPC demo, real and measured** — official `aeron-all` jar from
   Maven Central, `aeron:ipc`, 1,000,000 messages, p50/p90/p99/p99.9/p99.99
   recorded by the official HdrHistogram jar —
-  `cpp/evidence/10-latency-elite/FASE3/AERON_IPC_REPORT.md`
+  `cpp/evidence/10-latency-elite/PHASE3/AERON_IPC_REPORT.md`
 - **Kernel-bypass design reference** (DPDK / OpenOnload / Machnet) with
   pinned-commit citations and an honest "not executed on this host" status —
   `cpp/bench/KERNEL_BYPASS_DESIGN.md`
@@ -120,7 +120,7 @@ Then open `bench-latency/index.html` (or read the JSONs directly under
 suites run green on Linux and Windows in GitHub Actions on every push.
 
 The Aeron IPC demo re-runs with one command (needs a JDK 21):
-`powershell -ExecutionPolicy Bypass -File cpp\evidence\10-latency-elite\FASE3\aeron-ipc\run_aeron_ipc_demo.ps1`
+`powershell -ExecutionPolicy Bypass -File cpp\evidence\10-latency-elite\PHASE3\aeron-ipc\run_aeron_ipc_demo.ps1`
 
 ## Honest status
 

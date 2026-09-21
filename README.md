@@ -89,7 +89,7 @@ specification with test-red → implementation → test-green discipline:
 
 All C++ suites are green: **74/74 tests** (57 venue-connectivity + 10 HDR
 histogram + 7 SPSC ring) plus the HDR cross-check
-([`cpp/evidence/10-latency-elite/FASE1/all_phases_green_20260919.log`](cpp/evidence/10-latency-elite/FASE1/all_phases_green_20260919.log)).
+([`cpp/evidence/10-latency-elite/PHASE1/all_phases_green_20260919.log`](cpp/evidence/10-latency-elite/PHASE1/all_phases_green_20260919.log)).
 The Binance SBE production lane is deferred by the
 capture policy until the JSON gates close and an Ed25519 market-data-only key
 exists —
@@ -112,7 +112,7 @@ evidence directory holds the full trail
 | JSON stdlib decode (baseline) | p50 1.50 µs, p99.99 48.1 µs | [`bench_json_final_hdr.json`](cpp/bench/benchmarks/bench_json_final_hdr.json) |
 | False sharing (2 threads, one cache line) | **5.4× slower at p50**, 4.7× lower throughput than `alignas(64)` | [`bench_false_sharing_final_hdr.json`](cpp/bench/benchmarks/bench_false_sharing_final_hdr.json) |
 | SPSC ring 1P/1C | push p50 48 ns (incl. timestamp), pop p50 **1 ns**, **21.4M msg/s**, explicit overflow | [`bench_spsc_final_hdr.json`](cpp/bench/benchmarks/bench_spsc_final_hdr.json) |
-| Aeron IPC (real run, official jars) | 1M messages: p50 **400 ns**, p99.99 1.54 ms | [`AERON_IPC_REPORT.md`](cpp/evidence/10-latency-elite/FASE3/AERON_IPC_REPORT.md) |
+| Aeron IPC (real run, official jars) | 1M messages: p50 **400 ns**, p99.99 1.54 ms | [`AERON_IPC_REPORT.md`](cpp/evidence/10-latency-elite/PHASE3/AERON_IPC_REPORT.md) |
 | Kernel-bypass (DPDK / OpenOnload / Machnet) | documented design with pinned-commit citations — **not executed**: no dedicated NICs on this host | [`KERNEL_BYPASS_DESIGN.md`](cpp/bench/KERNEL_BYPASS_DESIGN.md) |
 
 Rendered table of every benchmark (dev + final): [`bench-latency/index.html`](bench-latency/index.html).
@@ -240,7 +240,7 @@ live-run summary. Claims-to-evidence index: [docs/EVIDENCE.md](docs/EVIDENCE.md)
   session, lock-free SPSC ring, header-only HDR latency histogram — `cpp/`, all suites green
   on both platforms.
 - **Java 21 + Aeron 1.53.2** (official jars): the measured IPC demo
-  (`cpp/evidence/10-latency-elite/FASE3/`).
+  (`cpp/evidence/10-latency-elite/PHASE3/`).
 - Deterministic models for every live path, property/contract tests, red-green discipline.
 
 ## 5-minute verification
@@ -265,7 +265,7 @@ p50/p99/p99.9/p99.99 tables (or read the JSONs under
 [`cpp/bench/benchmarks/`](cpp/bench/benchmarks)), and check the CI badge above — the same
 suites run green on Linux and Windows in GitHub Actions on every push, publishing the
 dev-mode JSONs as artifacts. The Aeron IPC demo re-runs with one command on a JDK 21 host:
-`powershell -ExecutionPolicy Bypass -File cpp\evidence\10-latency-elite\FASE3\aeron-ipc\run_aeron_ipc_demo.ps1`
+`powershell -ExecutionPolicy Bypass -File cpp\evidence\10-latency-elite\PHASE3\aeron-ipc\run_aeron_ipc_demo.ps1`
 
 ## Run it (production capture service)
 

@@ -51,7 +51,7 @@ to the same spec bytes.
   reference with pinned-commit citations (documented, not executed: no
   dedicated NICs on this host).
 - Measured Aeron IPC demo (official jars, SHA256-recorded):
-  `evidence/10-latency-elite/FASE3/AERON_IPC_REPORT.md`.
+  `evidence/10-latency-elite/PHASE3/AERON_IPC_REPORT.md`.
 
 Measured numbers live in `bench/benchmarks/*.json` (dev + final modes,
 including the `*_hdr.json` percentile reports); the rendered table is

@@ -1,4 +1,4 @@
-# Kernel-Bypass Design Reference (FASE 4)
+# Kernel-Bypass Design Reference (PHASE 4)
 
 This document is a design reference only. It records the kernel-bypass
 technologies that would be required to drive message-path latency below what
@@ -408,12 +408,12 @@ or run on this host.
 
 | Item | Status | Evidence / source |
 |---|---|---|
-| HDR histogram implementation vs HdrHistogram_c semantics | Measured (deterministic crosscheck, PASS) | `cpp/evidence/10-latency-elite/FASE1/crosscheck_report.json` |
+| HDR histogram implementation vs HdrHistogram_c semantics | Measured (deterministic crosscheck, PASS) | `cpp/evidence/10-latency-elite/PHASE1/crosscheck_report.json` |
 | ITCH 5.0 decode latency/throughput | Measured on this host | `cpp/bench/benchmarks/bench_itch_final.json`, `evidence/EVIDENCE_05_BENCHMARKS.md` |
 | SBE Binance decode latency/throughput | Measured on this host | `cpp/bench/benchmarks/bench_sbe_final.json` |
 | Multicast UDP publication latency/throughput | Measured on this host | `cpp/bench/benchmarks/bench_mcast_final.json` |
 | JSON depth decode latency/throughput | Measured on this host | `cpp/bench/benchmarks/bench_json_final.json` |
-| Aeron IPC demo (jars + sources) | Set up, no measured results committed | `cpp/evidence/10-latency-elite/FASE3/aeron-ipc/` |
+| Aeron IPC demo (jars + sources) | Set up, no measured results committed | `cpp/evidence/10-latency-elite/PHASE3/aeron-ipc/` |
 | DPDK capabilities, license, requirements | Documented-only design, not run | `dpdk` capture, commit 6bbb7b38b17f |
 | OpenOnload capabilities, license, requirements | Documented-only design (GPL-2.0, concept only), not run | `onload` capture, commit 4b4648b360fd |
 | Machnet capabilities, quote, Azure requirements | Documented-only design, not run | `machnet` capture, commit 877397b94d31 |

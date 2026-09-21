@@ -1,56 +1,54 @@
-# EVIDENCIA — FASE 3-C: Arquitectura anti-pérdida por capas (OBLIGATORIA)
+# EVIDENCE — PHASE 3-C: Layered anti-loss architecture (MANDATORY)
 
-**Estado: DONE (verde).** Fecha: 2026-09-18. Directorio: `cpp/resilience/`.
+**Status: DONE (green).** Date: 2026-09-18. Directory: `cpp/resilience/`.
 
-## Spec usada (nada inventado)
+## Spec used (nothing invented)
 
-- `ELITE_LOSS_RECOVERY_20260918.md` §6 (LA SOLUCIÓN DEFINITIVA ANTI-PÉRDIDA):
-  1. duplicación en la fuente (dos caminos independientes del mismo dato);
-  2. failover por capas FCP (feed vivo → cache local → API del venue → REST);
-  3. reconciliación de gaps contra la fuente autoritativa tras cada
-     recuperación;
-  4. backfill desde el registro histórico del venue (Binance REST
-     aggTrades/depth, pineado en `BINANCE_SOURCE_LOCK.md` rest-api.md);
-  5. procedencia en la cadena: `captured-live` | `backfilled` + hash, nunca
-     mezcla silenciosa.
+- `ELITE_LOSS_RECOVERY_20260918.md` §6 (THE DEFINITIVE ANTI-LOSS SOLUTION):
+  1. source duplication (two independent paths of the same datum);
+  2. layered failover FCP (live feed → local cache → venue API → REST);
+  3. gap reconciliation against the authoritative source after recovery;
+  4. backfill from the venue's historical record (Binance REST
+     aggTrades/depth, pinned in `BINANCE_SOURCE_LOCK.md` rest-api.md);
+  5. provenance chain: `captured-live` | `backfilled` + hash, never a silent
+     mix.
 
-## Implementación (`cpp/resilience/`)
+## Implementation (`cpp/resilience/`)
 
-- `LayeredCapture`: journal por secuencia con procedencia declarada por
-  registro + hash de contenido (FNV-1a 32); dedup entre caminos redundantes
-  conservando la procedencia del primero; failover por capas con orden
-  documentado (live → cache → backfill REST); backfill inyectable
-  (`BackfillFn`), cuyo binding productivo es Binance REST aggTrades/depth
-  (documentado; requiere acceso live y key — fuera del alcance de esta
-  calificación, límite declarado en el header).
-- `reconcile()`: reconciliación autoritativa — completo solo si TODA
-  secuencia emitida por el venue (1..high) está presente como contenido
-  recuperable; registros gap-typed hacen la reconciliación INCOMPLETA con el
-  rango exacto faltante.
+- `LayeredCapture`: per-sequence journal with declared per-record provenance +
+  content hash (FNV-1a 32); dedup across redundant paths keeping the first
+  path's provenance; layered failover with documented order (live → cache →
+  REST backfill); injectable backfill (`BackfillFn`), whose production
+  binding is Binance REST aggTrades/depth (documented; requires live access
+  and key — declared boundary in the header).
+- `reconcile()`: authoritative reconciliation — complete only if EVERY
+  sequence emitted by the venue (1..high) is present as recoverable content;
+  gap-typed records make the reconciliation INCOMPLETE with the exact missing
+  range.
 
-## Test rojo → verde
+## Test red → green
 
-- **ROJO** (stub): `0 passed, 5 failed, 5 total`.
-- **VERDE**: `5 passed, 0 failed, 5 total`.
+- **RED** (stub): `0 passed, 5 failed, 5 total`.
+- **GREEN**: `5 passed, 0 failed, 5 total`.
 
-## Verificación exigida por la instrucción
+## Verification required by the instruction
 
-Test que mata un camino entero, recupera por el otro + backfill, y demuestra
-que el dataset final contiene TODO lo emitido por el venue con procedencia
-declarada:
+A test that kills an entire path, recovers via the other + backfill, and
+proves the final dataset contains EVERYTHING the venue emitted with declared
+provenance:
 
-- `kill_entire_live_path_rest_backfill_recovers_all`: venue emite 1..25; A
-  muere tras 10; backfill REST recupera 11..24 (`backfilled`); nuevo feed live
-  entrega 25 (`captured-live`); reconcile vs venue=25 → COMPLETO; cada rango
-  con su procedencia exacta.
-- `cache_layer_serves_first_then_rest_backfill`: orden FCP verificado (cache
-  local antes que REST; contenido de cache conserva `captured-live`).
-- `dual_path_source_duplication_no_loss`: dos caminos independientes, A muere
-  en 15, B cubre; 25/25 live, cero pérdida.
-- `unrecoverable_window_typed_gap_exact_range`: si ni el backfill del venue
-  tiene la secuencia 11 → queda TIPADA [11..11] y reconcile = INCOMPLETO
-  (honestidad: nunca fingir completitud).
-- `journal_hashes_bind_every_record`: hash por registro + procedencia del
-  primer camino conservada.
+- `kill_entire_live_path_rest_backfill_recovers_all`: venue emits 1..25; A
+  dies after 10; REST backfill recovers 11..24 (`backfilled`); a new live feed
+  delivers 25 (`captured-live`); reconcile vs venue=25 → COMPLETE; each range
+  with its exact provenance.
+- `cache_layer_serves_first_then_rest_backfill`: FCP order verified (local
+  cache before REST; cached content keeps `captured-live`).
+- `dual_path_source_duplication_no_loss`: two independent paths, A dies at
+  15, B covers; 25/25 live, zero loss.
+- `unrecoverable_window_typed_gap_exact_range`: if even the venue backfill
+  lacks sequence 11 → it stays TYPED [11..11] and reconcile = INCOMPLETE
+  (honesty: completeness is never faked).
+- `journal_hashes_bind_every_record`: per-record hash + first-path provenance
+  preserved.
 
-Log verde: `cpp/build.ps1 -Phase resilience` (y `ALL_PHASES_GREEN.log`).
+Green log: `cpp/build.ps1 -Phase resilience` (and `ALL_PHASES_GREEN.log`).

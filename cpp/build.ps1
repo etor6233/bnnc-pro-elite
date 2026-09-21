@@ -167,11 +167,11 @@ foreach ($n in $names) {
     }
 }
 
-# FASE 1 (latency elite): build the HDR CLI and run the cross-validation
+# PHASE 1 (latency elite): build the HDR CLI and run the cross-validation
 # against the independent Python reference (HdrHistogram_c semantics).
 if ($names -contains "bench") {
     Invoke-ClBuild -Sources @("$Root\bench\tools\hdr_cli.cpp") -Output "$BinDir\hdr_cli.exe" -IncludeDirs @("$Root")
-    python "$Root\bench\tools\crosscheck_hdr.py" --exe "$BinDir\hdr_cli.exe" --out "$Root\bench\tools\crosscheck_report.json" --evidence "$Root\evidence\10-latency-elite\FASE1"
+    python "$Root\bench\tools\crosscheck_hdr.py" --exe "$BinDir\hdr_cli.exe" --out "$Root\bench\tools\crosscheck_report.json" --evidence "$Root\evidence\10-latency-elite\PHASE1"
     if ($LASTEXITCODE -ne 0) { Write-Host "CROSSCHECK FAILED"; exit $LASTEXITCODE }
 }
 

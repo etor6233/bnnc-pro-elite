@@ -1,4 +1,4 @@
-# run_benchmarks.ps1 — FASE 5: builds and runs the measured benchmark suite
+# run_benchmarks.ps1 — PHASE 5: builds and runs the measured benchmark suite
 # in dev mode (fast) and final mode (held-out sizes). Every number lands in
 # bench/benchmarks/*.json; nothing is estimated.
 param(
@@ -41,7 +41,7 @@ function Invoke-ClBuild {
 Invoke-ClBuild -Sources @("$Root\bench_itch.cpp", "$CppRoot\itch\src\itch_codec.cpp") -Output "$BinDir\bench_itch.exe" -IncludeDirs @("$CppRoot\itch\include", "$Root")
 Invoke-ClBuild -Sources @("$Root\bench_sbe.cpp", "$CppRoot\sbe\src\binance_sbe.cpp") -Output "$BinDir\bench_sbe.exe" -IncludeDirs @("$CppRoot\sbe\include", "$Root")
 Invoke-ClBuild -Sources @("$Root\bench_mcast.cpp", "$CppRoot\net\src\mcast_feed.cpp") -Output "$BinDir\bench_mcast.exe" -IncludeDirs @("$CppRoot\net\include", "$Root") -Libs "ws2_32.lib"
-# FASE 2 (latency elite): false sharing / cache-line and SPSC ring benches.
+# PHASE 2 (latency elite): false sharing / cache-line and SPSC ring benches.
 Invoke-ClBuild -Sources @("$Root\bench_false_sharing.cpp") -Output "$BinDir\bench_false_sharing.exe" -IncludeDirs @("$Root")
 Invoke-ClBuild -Sources @("$Root\bench_spsc.cpp") -Output "$BinDir\bench_spsc.exe" -IncludeDirs @("$CppRoot\net\include", "$Root")
 
