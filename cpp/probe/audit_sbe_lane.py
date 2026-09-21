@@ -12,12 +12,13 @@ import hashlib
 import json
 import pathlib
 import statistics
+import os
 import subprocess
 import sys
 import time
 import urllib.request
 
-KEY_MARKER = "hsKgK610"
+KEY_MARKER = os.environ.get("SBE_KEY_MARKER", "")  # never hardcoded
 
 
 def pct(xs, p):
@@ -72,7 +73,7 @@ def main() -> int:
     # 2) key never on disk
     key_on_disk = 0
     for p in out.iterdir():
-        if p.is_file() and p.name != "stderr.log":
+        if p.is_file() and p.name != "stderr.log" and KEY_MARKER:
             if KEY_MARKER in p.read_text(encoding="utf-8", errors="ignore"):
                 key_on_disk += 1
 
@@ -104,7 +105,7 @@ def main() -> int:
     report = {
         "generated_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "journal": {"rows": n_rows, "chain_ok": chain_ok, "events": events},
-        "key_on_disk_matches": key_on_disk,
+        "key_on_disk_matches": key_on_disk if KEY_MARKER else "skipped (no SBE_KEY_MARKER provided)",
         "clock": {"offset_ms": offset_ms, "rtt_ms": rtt_ms,
                   "uncertainty_ms": rtt_ms / 2.0},
         "templates": {},
