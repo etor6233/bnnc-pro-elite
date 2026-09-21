@@ -21,3 +21,8 @@ artifacts/*
 *.bnraw
 *.bnack
 *.bnseg
+
+# Build artifacts (C++ suites)
+*.obj
+*.pdb
+cpp/build/

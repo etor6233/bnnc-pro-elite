@@ -1,6 +1,6 @@
 # bnnc-pro-elite
 
-[![CI](https://img.shields.io/github/actions/workflow/status/etor6233/bnnc-pro-elite/ci.yml?branch=latency-elite)](https://github.com/etor6233/bnnc-pro-elite/actions/workflows/ci.yml)
+[![CI](https://img.shields.io/github/actions/workflow/status/etor6233/bnnc-pro-elite/ci.yml?branch=main)](https://github.com/etor6233/bnnc-pro-elite/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 **A production-grade market-data capture system for Binance Spot (BTCUSDT/ETHUSDT) with forensic
