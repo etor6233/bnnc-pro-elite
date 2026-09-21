@@ -94,3 +94,45 @@ jobs:
           python -m pip install "websockets==17.0.1"
           export PYTHONPATH="$PWD/cpp/sbe-lane"
           python -m unittest discover -s cpp/sbe-lane/tests -v
+
+  cpp-bench:
+    # Latency benchmarks in dev mode (fast, verified pipeline). Final mode
+    # (held-out sizes) stays local by design: its numbers are only
+    # meaningful on a quiet machine dedicated to the measurement, which a
+    # shared CI runner is not. CI therefore proves the suite builds and runs
+    # on Linux AND Windows, and publishes the measured dev JSONs (including
+    # the HDR percentiles) as artifacts.
+    name: C++ benchmarks dev (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Python (JSON benchmark + HDR cross-check)
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
+
+      - name: Benchmarks dev (Windows, MSVC)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          powershell.exe -NoProfile -ExecutionPolicy Bypass -File cpp\bench\run_benchmarks.ps1 -Mode dev
+
+      - name: Benchmarks dev (Linux, g++)
+        if: runner.os == 'Linux'
+        run: |
+          set -e
+          bash cpp/bench/run_benchmarks.sh dev
+
+      - name: Upload benchmark JSONs (artifacts)
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-jsons-${{ matrix.os }}
+          path: |
+            cpp/bench/benchmarks/*_dev.json
+            cpp/bench/benchmarks/*_dev_hdr.json
+          if-no-files-found: error

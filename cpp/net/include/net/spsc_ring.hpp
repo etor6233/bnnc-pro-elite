@@ -64,11 +64,44 @@ class SpscRing {
 
     bool empty() const { return size() == 0; }
 
+    // FASE 2 (latency elite): runtime corroboration of the cache-line
+    // separation guarantee. Returns the byte distance between the producer's
+    // tail_ and the consumer's head_ in THIS instance; asserted >= 64 by
+    // net/tests/test_spsc.cpp on every platform.
+    size_t index_separation_bytes() const {
+        const uintptr_t a = (uintptr_t)(const void*)&head_;
+        const uintptr_t b = (uintptr_t)(const void*)&tail_;
+        return (size_t)(b > a ? b - a : a - b);
+    }
+
   private:
     std::vector<T> ring_;
     size_t slots_ = 0;
     alignas(64) std::atomic<size_t> head_;
     alignas(64) std::atomic<size_t> tail_;
+
+    // FASE 2 (latency elite): compile-time guarantee that the producer's
+    // tail_ and the consumer's head_ never share a cache line. If they did,
+    // every update would invalidate the other side's line and serialize the
+    // two threads (false sharing — LMAX Disruptor cache-line padding
+    // pattern, capture external-review/low-latency-reference/disruptor,
+    // commit c871ca49826a).
+    //
+    // Proof: both members are declared alignas(64), so their offsets are
+    // multiples of 64 ([basic.align]/5); distinct non-static data members
+    // never overlap ([intro.object]); with sizeof(atomic<size_t>) >= 1 their
+    // offsets must differ, hence by at least 64 bytes. The per-member
+    // alignment is re-asserted below with each compiler's member-expression
+    // alignment intrinsic (alignof of the TYPE would not see the alignas on
+    // the member), the class-level alignment in net/tests/test_spsc.cpp, and
+    // the runtime value via index_separation_bytes().
+#if defined(_MSC_VER)
+    static_assert(__alignof(head_) >= 64 && __alignof(tail_) >= 64,
+                  "head_ and tail_ must be cache-line aligned");
+#elif defined(__GNUC__) || defined(__clang__)
+    static_assert(__alignof__(head_) >= 64 && __alignof__(tail_) >= 64,
+                  "head_ and tail_ must be cache-line aligned");
+#endif
 };
 
 }  // namespace net

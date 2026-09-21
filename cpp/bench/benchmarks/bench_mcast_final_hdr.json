@@ -1,0 +1,19 @@
+{
+  "benchmark": "multicast_publish",
+  "mode": "final",
+  "histogram": "bench/hdr_histogram.hpp, HdrHistogram_c semantics (commit 1343a18908c6), 3 sig figs, [1 ns, 1 h]",
+  "samples": 100000,
+  "batch_size": 100,
+  "datagrams_per_rep": 2000000,
+  "repetitions": 5,
+  "datagram_bytes": 29,
+  "p50_ns": 2465,
+  "p99_ns": 101439,
+  "p99.9_ns": 227071,
+  "p99.99_ns": 375295,
+  "min_ns": 1701,
+  "max_ns": 716287,
+  "mean_ns": 4926.99,
+  "anti_cheat": "fresh encode per iteration; volatile sink; no memoization",
+  "measured_on": "MSVC cl 14.50 /O2, Windows x64, loopback multicast"
+}

@@ -1,0 +1,11 @@
+[PASS] known_values_exact_percentiles
+[PASS] single_value_all_percentiles
+[PASS] empty_histogram_returns_zero
+[PASS] percentile_monotonicity
+[PASS] record_bounds
+[PASS] min_max_semantics
+[PASS] constructor_validation
+[PASS] count_at_value
+[PASS] reset_clears
+[PASS] large_values_do_not_overflow
+== 10 passed, 0 failed, 10 total ==

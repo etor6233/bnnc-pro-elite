@@ -1,0 +1,34 @@
+{
+  "benchmark": "spsc_ring_1p1c",
+  "mode": "dev",
+  "histogram": "bench/hdr_histogram.hpp, HdrHistogram_c semantics (commit 1343a18908c6), 3 sig figs, [1 ns, 1 h]",
+  "e2e": {
+    "samples": 30000000,
+    "p50_ns": 4.88571e+07,
+    "p99_ns": 8.78182e+07,
+    "p99.9_ns": 9.07018e+07,
+    "p99.99_ns": 9.0964e+07,
+    "min_ns": 500,
+    "max_ns": 9.0964e+07,
+    "mean_ns": 4.63842e+07,
+    "definition": "consumer clock read - producer enqueue timestamp, per item, includes queueing",
+    "consumer_bookkeeping": "per-item histogram record included in the consumer loop"
+  },
+  "push": {
+    "samples": 30000,
+    "p50_ns": 36,
+    "p99_ns": 65,
+    "p99.9_ns": 181,
+    "p99.99_ns": 245,
+    "mean_ns": 38.067
+  },
+  "pop": {
+    "samples": 6291,
+    "p50_ns": 2,
+    "p99_ns": 2,
+    "p99.9_ns": 6,
+    "p99.99_ns": 15,
+    "mean_ns": 1.55412
+  },
+  "measured_on": "MSVC cl 14.50 /O2, Windows x64"
+}

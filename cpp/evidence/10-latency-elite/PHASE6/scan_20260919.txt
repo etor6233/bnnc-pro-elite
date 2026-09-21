@@ -1,0 +1,10 @@
+﻿key-literal | skipped (no external key file path provided to the scan)
+pattern | 0 hits: -----BEGIN [A-Z ]*PRIVATE KEY-----
+pattern | 0 hits: (?i)api[_-]?key["'\s:=]+[A-Za-z0-9]{24,}
+pattern | 0 hits: (?i)secret["'\s:=]+[A-Za-z0-9]{24,}
+pattern | 0 hits: (?i)password["'\s:=]+[^"'\s]{8,}
+personal-path | 0 hits (no per-user Windows profile paths in the repo)
+language | 0 hits (no Spanish function words in public docs)
+link | checked 4 files (README, portfolio, docs/EVIDENCE, cpp/README)
+placeholder | 0 hits
+

@@ -1,51 +1,51 @@
-# EVIDENCIA — FASE 3-B: Detección instantánea + recuperación élite (OBLIGATORIA)
+# EVIDENCE — PHASE 3-B: Instant loss detection + elite recovery (MANDATORY)
 
-**Estado: DONE (verde).** Fecha: 2026-09-18. Directorio: `cpp/recovery/`.
+**Status: DONE (green).** Date: 2026-09-18. Directory: `cpp/recovery/`.
 
-## Spec usada (nada inventado)
+## Spec used (nothing invented)
 
-- `ELITE_LOSS_RECOVERY_20260918.md` §0-§4 (raíz del workspace) + fuentes que
-  anota (MoldUDP64, CME MDP 3.0 arbitration/recovery, B3 UMDF snapshot/RptSeq).
-- `HOT_REDUNDANT_CAPTURE_AUTHORITY_V1.md` (límite honesto de Binance: los feeds
-  duales son lanes independientes; el algoritmo A/B de CME es contraste, no
-  contrato de Binance — el arbiter implementa el patrón genérico con ese
-  límite documentado).
-- `BINANCE_SOURCE_LOCK.md` web-socket-streams.md + `MARKET_MICROSTRUCTURE`
-  §5.1 (regla local de libro: set quantity, cero elimina nivel, gap de
-  update-id → resync).
+- `ELITE_LOSS_RECOVERY_20260918.md` §0-§4 (workspace root) + its annotated
+  sources (MoldUDP64, CME MDP 3.0 arbitration/recovery, B3 UMDF
+  snapshot/RptSeq).
+- `HOT_REDUNDANT_CAPTURE_AUTHORITY_V1.md` (honest Binance boundary: dual feeds
+  are independent lanes; the CME A/B algorithm is a contrast, not a Binance
+  contract — the arbiter implements the generic pattern with that documented
+  boundary).
+- `BINANCE_SOURCE_LOCK.md` web-socket-streams.md + MARKET_MICROSTRUCTURE §5.1
+  (local book rule: set quantity, zero removes a level, update-id gap → resync).
 
-## Implementación (los DOS casos del mandato)
+## Implementation (BOTH mandate cases)
 
-1. **SILENCIO TOTAL**: `CadenceGuard` (depth@20ms; sin mensajes en 3 ventanas
-   [dentro del rango 2-5 de la spec] = muerto, tipado al instante),
-   `Watchdog` (deadline 5 s ping/pong). Causas tipadas:
-   `transport_dead` / `exchange_silent` / `serverShutdown`.
-2. **PÉRDIDA DE PAQUETES (flujo vivo)**: `DualLaneArbiter` — A/B por secuencia;
-   hueco en UNA lane tipado con rango exacto y cubierto por la otra; hueco en
-   AMBAS = ConsumerGap + `apply_snapshot` (snapshot + sequence bridging).
-3. **Continuidad del libro**: `DerivedBook` con regla Binance de diff-depth
-   (first==last+1; gap → ResyncNeeded tipado, jamás silencioso).
-4. **Señales de anticipación** (`SignalMonitor`): desviación de tasa, frecuencia
-   de huecos, tendencia RTT, rotación preventiva a las 23 h de 24 h.
+1. **TOTAL SILENCE**: `CadenceGuard` (depth@20ms; no message within 3 windows
+   [inside the spec's 2-5 range] = dead, typed instantly), `Watchdog` (5 s
+   ping/pong deadline). Typed causes: `transport_dead` / `exchange_silent` /
+   `serverShutdown`.
+2. **PACKET LOSS (live flow)**: `DualLaneArbiter` — A/B by sequence; a gap on
+   ONE lane is typed with the exact range and covered by the other; a gap on
+   BOTH = ConsumerGap + `apply_snapshot` (snapshot + sequence bridging).
+3. **Book continuity**: `DerivedBook` with the Binance diff-depth rule
+   (first==last+1; gap → typed ResyncNeeded, never silent).
+4. **Anticipation signals** (`SignalMonitor`): rate deviation, gap frequency,
+   RTT trend, preventive rotation at 23 h of 24 h.
 
-## Test rojo → verde
+## Test red → green
 
-- **ROJO** (stub): `0 passed, 10 failed, 10 total`.
-- **VERDE**: `10 passed, 0 failed, 10 total`.
+- **RED** (stub): `0 passed, 10 failed, 10 total`.
+- **GREEN**: `10 passed, 0 failed, 10 total`.
 
-## Verificación exigida por la instrucción
+## Verification required by the instruction
 
-- (a) Silencio total → detección tipada EN EL PLAZO declarado y failover a la
-  otra lane: `cadence_exchange_silent_within_declared_deadline` (no dispara a
-  119 ms, dispara `exchange_silent` a 120 ms con 3 ventanas de 20 ms) +
-  `total_silence_failover_typed_hole` (A muere tras seq 10, B retoma en 15,
-  hueco [11..14] TIPADO y B entrega continuo).
-- (b) Pérdida en feed A → estado derivado continuo vía B o snapshot con hueco
-  raw declarado: `ab_arbitration_loss_on_a_covered_by_b` (A pierde 5 → gap
-  tipado [5..5] en A, B cubre, cero ConsumerGap) +
-  `dual_loss_consumer_gap_and_snapshot_bridge` (pérdida en ambas → gap [4..5]
-  declarado + snapshot bridging en 9 → continuidad).
-- Integración real SBE→libro: `sbe_depth_diff_to_book_integration` (frame SBE
-  generado con el encoder oficial, decodificado por FASE 2, aplicado al libro).
+- (a) Total silence → typed detection WITHIN the declared deadline and
+  failover to the other lane: `cadence_exchange_silent_within_declared_deadline`
+  (no fire at 119 ms, fires `exchange_silent` at 120 ms with 3×20 ms windows)
+  + `total_silence_failover_typed_hole` (A dies after seq 10, B resumes at 15,
+  hole [11..14] TYPED and B delivers continuously).
+- (b) Packet loss on feed A → continuous derived state via B or snapshot with
+  the raw gap declared: `ab_arbitration_loss_on_a_covered_by_b` (A loses 5 →
+  typed gap [5..5] on A, B covers, zero ConsumerGap) +
+  `dual_loss_consumer_gap_and_snapshot_bridge` (loss on both → gap [4..5]
+  declared + snapshot bridge at 9 → continuity).
+- Real SBE→book integration: `sbe_depth_diff_to_book_integration` (SBE frame
+  built with the official encoder, decoded by PHASE 2, applied to the book).
 
-Log verde: `cpp/build.ps1 -Phase recovery` (y `ALL_PHASES_GREEN.log`).
+Green log: `cpp/build.ps1 -Phase recovery` (and `ALL_PHASES_GREEN.log`).

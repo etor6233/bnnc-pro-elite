@@ -15,11 +15,11 @@ Every artifact in this tree traces to a captured source. Nothing is invented.
 ## Design references (not copied)
 
 - `external-review/low-latency-reference/simple-binary-encoding` (Apache-2.0):
-  wire-format semantics reference for FASE 2.
+  wire-format semantics reference for PHASE 2.
 - `external-review/low-latency-reference/aeron` (Apache-2.0): design reference
-  for sequence-based publication/NAK retransmission (FASE 3).
+  for sequence-based publication/NAK retransmission (PHASE 3).
 - `external-review/low-latency-reference/quickfix` (QuickFIX license):
-  canonical FIX session reference for FASE 4.
+  canonical FIX session reference for PHASE 4.
 
 Those captured trees live in the workspace, not in this repository; only
 original code derived from their documented semantics is committed here.

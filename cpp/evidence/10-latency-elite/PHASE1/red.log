@@ -1,0 +1,73 @@
+[FAIL] known_values_exact_percentiles
+       bench\tests\test_hdr.cpp:37: EXPECT_EQ failed: h.total_count() == 100
+    left  = 0
+    right = 100
+       bench\tests\test_hdr.cpp:38: EXPECT_EQ failed: h.value_at_percentile(0.0) == 1
+    left  = 0
+    right = 1
+       bench\tests\test_hdr.cpp:39: EXPECT_EQ failed: h.value_at_percentile(50.0) == 50
+    left  = 0
+    right = 50
+       bench\tests\test_hdr.cpp:40: EXPECT_EQ failed: h.value_at_percentile(99.0) == 99
+    left  = 0
+    right = 99
+       bench\tests\test_hdr.cpp:41: EXPECT_EQ failed: h.value_at_percentile(100.0) == 100
+    left  = 0
+    right = 100
+       bench\tests\test_hdr.cpp:42: EXPECT_EQ failed: h.min() == 1
+    left  = 0
+    right = 1
+       bench\tests\test_hdr.cpp:43: EXPECT_EQ failed: h.max() == 100
+    left  = 0
+    right = 100
+[FAIL] single_value_all_percentiles
+       bench\tests\test_hdr.cpp:50: EXPECT_EQ failed: h.value_at_percentile(50.0) == 1000
+    left  = 0
+    right = 1000
+       bench\tests\test_hdr.cpp:51: EXPECT_EQ failed: h.value_at_percentile(99.0) == 1000
+    left  = 0
+    right = 1000
+       bench\tests\test_hdr.cpp:52: EXPECT_EQ failed: h.value_at_percentile(99.9) == 1000
+    left  = 0
+    right = 1000
+       bench\tests\test_hdr.cpp:53: EXPECT_EQ failed: h.value_at_percentile(99.99) == 1000
+    left  = 0
+    right = 1000
+       bench\tests\test_hdr.cpp:54: EXPECT_EQ failed: h.max() == 1000
+    left  = 0
+    right = 1000
+[PASS] empty_histogram_returns_zero
+[PASS] percentile_monotonicity
+[FAIL] record_bounds
+       bench\tests\test_hdr.cpp:91: EXPECT failed: !h.record(-1)
+       bench\tests\test_hdr.cpp:92: EXPECT failed: !h.record(-1'000'000)
+       bench\tests\test_hdr.cpp:94: EXPECT failed: !h.record(1'000'001)
+       bench\tests\test_hdr.cpp:95: EXPECT_EQ failed: h.total_count() == 2
+    left  = 0
+    right = 2
+       bench\tests\test_hdr.cpp:97: EXPECT_EQ failed: h.max() == 1'000'000
+    left  = 0
+    right = 1000000
+[FAIL] min_max_semantics
+       bench\tests\test_hdr.cpp:107: EXPECT_EQ failed: h.min() == 5
+    left  = 0
+    right = 5
+       bench\tests\test_hdr.cpp:108: EXPECT_EQ failed: h.max() == 500
+    left  = 0
+    right = 500
+[FAIL] constructor_validation
+       bench\tests\test_hdr.cpp:115: EXPECT failed: threw
+       bench\tests\test_hdr.cpp:118: EXPECT failed: threw
+       bench\tests\test_hdr.cpp:121: EXPECT failed: threw
+       bench\tests\test_hdr.cpp:124: EXPECT failed: threw
+[FAIL] count_at_value
+       bench\tests\test_hdr.cpp:133: EXPECT_EQ failed: h.count_at_value(42) == 5
+    left  = 0
+    right = 5
+[PASS] reset_clears
+[FAIL] large_values_do_not_overflow
+       bench\tests\test_hdr.cpp:154: EXPECT_EQ failed: h.max() == kHighestNs
+    left  = 0
+    right = 3600000000000
+       bench\tests\test_hdr.cpp:159: EXPECT failed: p50 > 0
+== 3 passed, 7 failed, 10 total ==

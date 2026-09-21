@@ -1,0 +1,8 @@
+[PASS] cache_line_separation_runtime_probe
+[PASS] capacity_rounds_to_power_of_two
+[PASS] fifo_order
+[PASS] explicit_overflow_no_silent_drop
+[PASS] empty_pop_returns_false
+[PASS] size_wraparound
+[PASS] single_slot_capacity
+== 7 passed, 0 failed, 7 total ==

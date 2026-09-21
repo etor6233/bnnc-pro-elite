@@ -1,0 +1,9 @@
+test_spsc.cpp
+C:\Users\NL\Desktop\NEW BINANCE\cpp\public-repo\cpp\net\include\net/spsc_ring.hpp(80): warning C4324: 'net::SpscRing<uint64_t>': se rellenó la estructura debido al especificador de alineación
+C:\Users\NL\Desktop\NEW BINANCE\cpp\public-repo\cpp\net\include\net/spsc_ring.hpp(80): note: el contexto de creación de instancias de la plantilla (el más antiguo primero) es
+C:\Users\NL\Desktop\NEW BINANCE\cpp\public-repo\cpp\net\tests\test_spsc.cpp(19): note: Vea la referencia a la creación de una instancia de clase plantilla "net::SpscRing<uint64_t>" que se está compilando
+C:\Users\NL\Desktop\NEW BINANCE\cpp\public-repo\cpp\net\include\net/spsc_ring.hpp(81): warning C4324: 'net::SpscRing<uint64_t>': se rellenó la estructura debido al especificador de alineación
+C:\Users\NL\Desktop\NEW BINANCE\cpp\public-repo\cpp\net\include\net/spsc_ring.hpp(80): warning C4324: 'net::SpscRing<uint8_t>': se rellenó la estructura debido al especificador de alineación
+C:\Users\NL\Desktop\NEW BINANCE\cpp\public-repo\cpp\net\include\net/spsc_ring.hpp(80): note: el contexto de creación de instancias de la plantilla (el más antiguo primero) es
+C:\Users\NL\Desktop\NEW BINANCE\cpp\public-repo\cpp\net\tests\test_spsc.cpp(28): note: Vea la referencia a la creación de una instancia de clase plantilla "net::SpscRing<uint8_t>" que se está compilando
+C:\Users\NL\Desktop\NEW BINANCE\cpp\public-repo\cpp\net\include\net/spsc_ring.hpp(81): warning C4324: 'net::SpscRing<uint8_t>': se rellenó la estructura debido al especificador de alineación

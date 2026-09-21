@@ -6,11 +6,11 @@
   "batch_size": 1000,
   "corpus": "spec-derived golden vectors (itch/golden)",
   "p50_ns": 16,
-  "p99_ns": 20,
-  "mean_ns": 16.298,
+  "p99_ns": 25,
+  "mean_ns": 16.462,
   "min_ns": 16,
-  "max_ns": 562,
-  "throughput_msg_per_s": 5.99165e+07,
+  "max_ns": 209,
+  "throughput_msg_per_s": 6.0105e+07,
   "anti_cheat": "fresh Decoded per iteration; volatile sink; no memoization",
   "measured_on": "MSVC cl 14.50 /O2, Windows x64"
 }

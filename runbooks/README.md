@@ -1,27 +1,27 @@
-# Runbooks
+﻿# Runbooks
 
-Operación del servicio continuo hot-redundant BTCUSDT/ETHUSDT (ADR-17):
+Operations for the continuous hot-redundant BTCUSDT/ETHUSDT service (ADR-17):
 
-- [CONTINUOUS_SERVICE.md](CONTINUOUS_SERVICE.md) — runbook operativo del
-  servicio continuo: preflight, inicio (consola elevada), estado, parada
-  segura, recuperación, cuarentena y límites. Ésta es la referencia de
-  OPERACIÓN actual; la producción NO se inicia hasta la revisión
-  independiente de Codex.
-- [QUALIFICATION_24H.md](QUALIFICATION_24H.md) — campaña HISTÓRICA de
-  calificación de 24 h (soak de una ventana). No es el modo de operación
-  continuo: documenta la campaña ya ejecutada, no dirige el servicio actual.
+- [CONTINUOUS_SERVICE.md](CONTINUOUS_SERVICE.md) — operational runbook for the
+  continuous service: preflight, start (elevated console), status, safe stop,
+  recovery, quarantine and limits. This is the CURRENT operational reference;
+  production is not started until the independent Codex review.
+- [QUALIFICATION_24H.md](QUALIFICATION_24H.md) — HISTORICAL 24-hour
+  qualification campaign (single-window soak). It is not the continuous
+  operating mode: it documents the campaign already executed, it does not
+  direct the current service.
 
-Runbooks especializados previstos (no ejecutados aún): `clock-unhealthy`,
-`websocket-gap-resync`, `slow-full-disk` y `bad-release-rollback`. No hay
-ejecución ni runbook de órdenes habilitado.
+Specialized runbooks planned (not executed yet): `clock-unhealthy`,
+`websocket-gap-resync`, `slow-full-disk` and `bad-release-rollback`. No order
+execution or order runbook is enabled.
 
-Guardas del launcher contra confusión test/operación (verificadas 2026-09-16
-en `scripts/run_hot_redundant_qualification.ps1`):
+Launcher guards against test/operation confusion (verified 2026-09-16 in
+`scripts/run_hot_redundant_qualification.ps1`):
 
-- `-TimeScale > 1` es SOLO de test (reloj virtual de hitos + topología
-  reducida 30/25 s, raíz de run `artifacts\hsc`); exige `-Mode Continuous` y
-  está prohibido en `-Mode Production`.
+- `-TimeScale > 1` is TEST-ONLY (virtual milestone clock + reduced 30/25 s
+  topology, run root `artifacts\hsc`); it requires `-Mode Continuous` and is
+  forbidden in `-Mode Production`.
 - `-SkipKernelObserver` / `-ArbiterOverride` / `-ArbiterVerifyOverride` /
-  `-ReleaseBinRoot` están rechazados en `-Mode Production`.
-- `-Mode ValidateOnly` recompila `--release` salvo que se indique
-  `-ReleaseBinRoot` con la ruta congelada (no asumir que es read-only).
+  `-ReleaseBinRoot` are rejected in `-Mode Production`.
+- `-Mode ValidateOnly` rebuilds `--release` unless `-ReleaseBinRoot` points at
+  the frozen path (do not assume it is read-only).

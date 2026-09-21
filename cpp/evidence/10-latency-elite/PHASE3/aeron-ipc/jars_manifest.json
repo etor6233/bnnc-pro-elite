@@ -1,0 +1,25 @@
+{
+  "jars": [
+    {
+      "groupId": "io.aeron",
+      "file": "aeron-all-1.53.2.jar",
+      "artifactId": "aeron-all",
+      "sha256": "2F8C1DBBEDF72D791842F311E0158F4BEF51527117C6F22A3A787D7D43A9B29C",
+      "url": "https://repo1.maven.org/maven2/io/aeron/aeron-all/1.53.2/aeron-all-1.53.2.jar",
+      "version": "1.53.2"
+    },
+    {
+      "groupId": "org.hdrhistogram",
+      "file": "HdrHistogram-2.2.2.jar",
+      "artifactId": "HdrHistogram",
+      "sha256": "22D1D4316C4EC13A68B559E98C8256D69071593731DA96136640F864FA14FAD8",
+      "url": "https://repo1.maven.org/maven2/org/hdrhistogram/HdrHistogram/2.2.2/HdrHistogram-2.2.2.jar",
+      "version": "2.2.2"
+    }
+  ],
+  "notes": [
+    "The modern Aeron groupId is io.aeron; the historical uk.co.real-logic:aeron-all artifact ends at 0.9.4.",
+    "Version 1.53.2 is the highest stable released aeron-all version that is <= 1.54.0 (the captured SNAPSHOT version in external-review/low-latency-reference/aeron/version.txt).",
+    "HdrHistogram 2.2.2 is the latest stable release per repo1.maven.org metadata."
+  ]
+}

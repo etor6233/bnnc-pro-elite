@@ -1,53 +1,50 @@
-# EVIDENCIA — FASE 3: Transporte multicast UDP + sequence recovery
+# EVIDENCE — PHASE 3: Multicast UDP transport + sequence recovery
 
-**Estado: DONE (verde).** Fecha: 2026-09-18. Directorio: `cpp/net/`.
+**Status: DONE (green).** Date: 2026-09-18. Directory: `cpp/net/`.
 
-## Specs usadas (nada inventado)
+## Specs used (nothing invented)
 
-- `NETWORKING_DISTRIBUTED_STREAMING.md` §4 (UDP): contrato mínimo
+- `NETWORKING_DISTRIBUTED_STREAMING.md` §4 (UDP): the minimum contract
   `version | message_type | stream/session_id | sequence | timestamp_domain |
-  payload_length | integrity/authentication | payload` + lista obligatoria de
-  definiciones de protocolo (ventana de secuencia y wrap, gap detection y
-  recovery, dedup y caducidad, heartbeat, replay protection, límites por peer,
-  conducta ante mensaje desconocido/truncado). Todas implementadas y
-  documentadas en `cpp/net/include/net/mcast_feed.hpp`.
-- `ELITE_LOSS_RECOVERY_20260918.md` §1-§3: detección instantánea por secuencia
-  (llega N+k, esperábamos N+1 → hueco [N+1..N+k-1]), retransmisión downstream
-  (MoldUDP64) y snapshot bridging.
-- Aeron (referencia de DISEÑO, no copia): publicación por secuencia,
-  retransmisión NAK, patrón ring buffer del media driver.
+  payload_length | integrity/authentication | payload` plus the mandatory
+  protocol definitions (sequence window + wraparound, gap detection +
+  recovery policy, dedup + expiry, heartbeat, replay protection, per-peer
+  limits, behavior on unknown/truncated messages). All implemented and
+  documented in `cpp/net/include/net/mcast_feed.hpp`.
+- `ELITE_LOSS_RECOVERY_20260918.md` §1-§3: instant per-sequence detection
+  (expected N+1, arrives N+k → gap [N+1..N+k-1]), downstream retransmission
+  (MoldUDP64) and snapshot bridging.
+- Aeron (DESIGN reference, not copied): sequence-based publication, NAK
+  retransmission, media-driver ring-buffer pattern.
 
-## Implementación
+## Implementation
 
-- `MulticastReceiver`/`MulticastSender` (join/leave IGMP, TTL, loopback),
-  portátiles Winsock2/POSIX (para el CI Linux de FASE 6).
-- `UnicastSocket` (listener de reparación NAK).
-- Framing con integridad FNV-1a 32 y version check.
-- `SequencedFeed`: gap instantáneo con rango exacto, dedup, ventana de
-  reorden acotada (overflow = gap TIPADO, nunca pérdida silenciosa),
-  retransmisiones entregadas como contenido recuperado, snapshot bridging,
-  wraparound de secuencia en ventana 2^31.
-- `SpscRing` (opcional de la instrucción): SPSC lock-free acotado con overflow
-  EXPLÍCITO (try_push=false) según MARKET_MICROSTRUCTURE §5.4 (drop silencioso
-  prohibido).
+- `MulticastReceiver`/`MulticastSender` (IGMP join/leave, TTL, loopback),
+  portable Winsock2/POSIX (for the Linux CI leg).
+- `UnicastSocket` (NAK repair listener).
+- Framing with FNV-1a 32 integrity and version check.
+- `SequencedFeed`: instant gap with exact range, dedup, bounded reorder
+  window (overflow = typed gap, never silent loss), retransmissions delivered
+  as recovered content, snapshot bridging, 2^31 sequence wraparound.
+- `SpscRing` (optional item): bounded lock-free SPSC with EXPLICIT overflow
+  (try_push=false) per MARKET_MICROSTRUCTURE §5.4 (silent drop forbidden).
 
-## Test rojo → verde
+## Test red → green
 
-- **ROJO** (stub): `2 passed, 10 failed, 12 total`.
-- **VERDE**: `12 passed, 0 failed, 12 total` — incluye los dos tests de
-  transporte con sockets multicast REALES en loopback:
-  - `multicast_join_leave_receive` (join/leave + recepción);
-  - `multicast_loss_retransmission_e2e`: el publisher omite el datagrama 5,
-    el receptor detecta el gap [5..5] AL INSTANTE, envía NAK al endpoint de
-    reparación, el publisher retransmite desde su store y el receptor
-    reconcilia la secuencia 1..10 completa (10/10 entregados exactamente una
-    vez, seq 5 marcado recovered).
+- **RED** (stub): `2 passed, 10 failed, 12 total`.
+- **GREEN**: `12 passed, 0 failed, 12 total` — including two transport tests
+  with REAL loopback multicast sockets:
+  - `multicast_join_leave_receive` (join/leave + receive);
+  - `multicast_loss_retransmission_e2e`: the publisher drops datagram 5, the
+    receiver detects gap [5..5] INSTANTLY, sends a NAK to the repair
+    endpoint, the publisher retransmits from its store and the receiver
+    reconciles the full 1..10 sequence (10/10 delivered exactly once, seq 5
+    flagged recovered).
 
-## Verificación exigida
+## Verification required
 
-- Test de pérdida/retransmisión y reconciliación por sequence number: SÍ
+- Loss/retransmission test with sequence-number reconciliation: YES
   (`multicast_loss_retransmission_e2e`).
-- Log verde: `cpp/build.ps1 -Phase net` (y `ALL_PHASES_GREEN.log`).
-- Nota de entorno documentada: los puertos 54507-54606 están en el rango
-  excluido de Windows (WinNAT) en este host; los tests usan 45678-45680
-  (comentado en `cpp/net/tests/test_mcast.cpp`).
+- Green log: `cpp/build.ps1 -Phase net` (and `ALL_PHASES_GREEN.log`).
+- Environment note documented: Windows excluded UDP ranges (WinNAT) on this
+  host; tests use ports outside them (commented in `cpp/net/tests/test_mcast.cpp`).

@@ -1,0 +1,18 @@
+{
+  "benchmark": "itch_decode",
+  "mode": "final",
+  "histogram": "bench/hdr_histogram.hpp, HdrHistogram_c semantics (commit 1343a18908c6), 3 sig figs, [1 ns, 1 h]",
+  "samples": 25000,
+  "batch_size": 1000,
+  "iterations_per_rep": 5000000,
+  "repetitions": 5,
+  "p50_ns": 16,
+  "p99_ns": 25,
+  "p99.9_ns": 53,
+  "p99.99_ns": 117,
+  "min_ns": 16,
+  "max_ns": 209,
+  "mean_ns": 16.462,
+  "anti_cheat": "fresh Decoded per iteration; volatile sink; no memoization",
+  "measured_on": "MSVC cl 14.50 /O2, Windows x64"
+}

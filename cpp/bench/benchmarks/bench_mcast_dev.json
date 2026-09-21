@@ -5,12 +5,12 @@
   "repetitions": 3,
   "batch_size": 100,
   "datagram_bytes": 29,
-  "p50_ns": 2985,
-  "p99_ns": 97322,
-  "mean_ns": 4736.73,
-  "min_ns": 2402,
-  "max_ns": 280273,
-  "throughput_dgram_per_s": 214593,
+  "p50_ns": 2451,
+  "p99_ns": 93447,
+  "mean_ns": 4673.02,
+  "min_ns": 1847,
+  "max_ns": 442893,
+  "throughput_dgram_per_s": 233122,
   "anti_cheat": "fresh encode per iteration; volatile sink; no memoization",
   "measured_on": "MSVC cl 14.50 /O2, Windows x64, loopback multicast"
 }

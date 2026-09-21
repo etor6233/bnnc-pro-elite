@@ -1,14 +1,42 @@
 # bnnc-pro-elite
 
-**Exchange-grade market data engineering for Binance Spot (BTCUSDT/ETHUSDT) with forensic
-data integrity — built in Rust and Python, verified by two independent implementations, and
-soaked live in production for 24 hours.**
+[![CI](https://img.shields.io/github/actions/workflow/status/etor6233/bnnc-pro-elite/ci.yml?branch=latency-elite)](https://github.com/etor6233/bnnc-pro-elite/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-This repository implements **Phases 1–2** of a 15-phase trading-system roadmap: dual-lane
-hot-redundant raw capture → canonical arbitration → sealed hash-chained journal →
-independent dual-language verification. The remaining phases are described honestly in
-[docs/ROADMAP.md](docs/ROADMAP.md) with entry/exit criteria — no speculative code, no fake
-claims.
+**A production-grade market-data capture system for Binance Spot (BTCUSDT/ETHUSDT) with forensic
+data integrity — soaked live for more than 45 hours, verified by two independent implementations,
+and complemented by a measured low-latency C++ venue-connectivity layer.**
+
+## The core: dual-lane hot-redundant capture with forensic integrity
+
+The heart of this repository is a live, self-maintaining capture system: two redundant
+websocket lanes (`PRIMARY` + `SHADOW`) feed a canonical arbitrator that emits a sealed,
+SHA-256 hash-chained journal. Silent loss is impossible by construction — every discontinuity
+becomes a **typed GAP record** (`unprovable_continuation`, `transport_dead`,
+`exchange_silent`) that is counted and auditable, never erased.
+
+What is verified about it, with evidence:
+
+- **Dual-language oracles agree byte-for-byte.** Independent Rust and Python verifiers
+  reconcile the full historical replay (1.57M records per symbol) with byte-identical
+  reports — `evidence/g2-reconciliation.json` (verdict `PASS`).
+- **Fault gates injected on the real live path.** Arbiter crash mid-publication, supervisor
+  kill, hung verifier — injected, recovered, and typed; the closed-set oracle still verifies
+  (`verified=true`, `errors=[]`) — `evidence/gates/fault-gate-20260917-closure.log`.
+- **Production soak >45 h.** The running service has soaked live with per-epoch verification
+  passing in both languages (Rust + Python) — `evidence/live-run-24h/SUMMARY.md` plus the
+  ongoing campaign audit trail.
+- **Instant typed loss recovery** (cadence + watchdog silence detection, A/B arbitration,
+  Binance diff-depth book continuity) and **layered anti-loss capture** (live → cache → REST
+  backfill with `captured-live`/`backfilled` provenance) —
+  `cpp/evidence/EVIDENCE_03B_RECOVERY.md`, `cpp/evidence/EVIDENCE_03C_RESILIENCE.md`.
+- **Self-maintaining service.** Planned epoch handovers with overlap (capture never stops),
+  per-lane circuit breakers, watchdog ping/pong typing transport-dead vs exchange-silent,
+  cooperative stop with kill-on-close job object — `docs/RUNBOOK.md`.
+
+This implements **Phases 1–2** of a 15-phase trading-system roadmap; the remaining phases are
+described honestly in `docs/ROADMAP.md` with entry/exit criteria — no speculative code, no
+fake claims. A reviewer-facing summary: [`portfolio/README.md`](portfolio/README.md).
 
 ---
 
@@ -54,16 +82,46 @@ specification with test-red → implementation → test-green discipline:
   only the Ed25519 market-data-only key →
   [`cpp/sbe-lane/RUNBOOK_SBE_LANE.md`](cpp/sbe-lane/RUNBOOK_SBE_LANE.md) +
   [`cpp/evidence/EVIDENCE_07_SBE_INTEGRATION.md`](cpp/evidence/EVIDENCE_07_SBE_INTEGRATION.md)
-- **CI on Linux + Windows** (Rust + Python + C++ suites + SBE lane tests,
-  cfg-gate for the Windows-only `windows_etw`/`windows_tcp` modules) →
+- **CI on Linux + Windows** (Rust + Python + C++ suites + SBE lane tests +
+  benchmark artifacts, cfg-gate for the Windows-only
+  `windows_etw`/`windows_tcp` modules) →
   [`.github/workflows/ci.yml`](.github/workflows/ci.yml)
 
-All new C++ suites are green: 57/57 tests + 5/5 SBE lane tests
-([`cpp/evidence/logs/ALL_PHASES_GREEN_20260918.log`](cpp/evidence/logs/ALL_PHASES_GREEN_20260918.log),
-SHA256 `BE00419C…4870`). The Binance SBE production lane is deferred by the
+All C++ suites are green: **74/74 tests** (57 venue-connectivity + 10 HDR
+histogram + 7 SPSC ring) plus the HDR cross-check
+([`cpp/evidence/10-latency-elite/PHASE1/all_phases_green_20260919.log`](cpp/evidence/10-latency-elite/PHASE1/all_phases_green_20260919.log)).
+The Binance SBE production lane is deferred by the
 capture policy until the JSON gates close and an Ed25519 market-data-only key
 exists —
 [`cpp/evidence/EVIDENCE_07_SBE_INTEGRATION.md`](cpp/evidence/EVIDENCE_07_SBE_INTEGRATION.md).
+
+---
+
+## Latency engineering, measured (2026-09-19)
+
+Scientific percentile measurement with the industry-canonical HDR histogram,
+lock-free/cache-line evidence, a real Aeron IPC run, and honest kernel-bypass
+design documentation. Every number below was measured on this host; the
+evidence directory holds the full trail
+([`cpp/evidence/10-latency-elite/`](cpp/evidence/10-latency-elite/)).
+
+| What | Measured result (final mode) | Evidence |
+|---|---|---|
+| ITCH 5.0 decode | p50 **16 ns**, p99 25 ns, p99.9 53 ns, p99.99 **117 ns** | [`bench_itch_final_hdr.json`](cpp/bench/benchmarks/bench_itch_final_hdr.json) |
+| Binance SBE decode | p50 **83 ns**, p99.9 326 ns, p99.99 966 ns | [`bench_sbe_final_hdr.json`](cpp/bench/benchmarks/bench_sbe_final_hdr.json) |
+| JSON stdlib decode (baseline) | p50 1.50 µs, p99.99 48.1 µs | [`bench_json_final_hdr.json`](cpp/bench/benchmarks/bench_json_final_hdr.json) |
+| False sharing (2 threads, one cache line) | **5.4× slower at p50**, 4.7× lower throughput than `alignas(64)` | [`bench_false_sharing_final_hdr.json`](cpp/bench/benchmarks/bench_false_sharing_final_hdr.json) |
+| SPSC ring 1P/1C | push p50 48 ns (incl. timestamp), pop p50 **1 ns**, **21.4M msg/s**, explicit overflow | [`bench_spsc_final_hdr.json`](cpp/bench/benchmarks/bench_spsc_final_hdr.json) |
+| Aeron IPC (real run, official jars) | 1M messages: p50 **400 ns**, p99.99 1.54 ms | [`AERON_IPC_REPORT.md`](cpp/evidence/10-latency-elite/PHASE3/AERON_IPC_REPORT.md) |
+| Kernel-bypass (DPDK / OpenOnload / Machnet) | documented design with pinned-commit citations — **not executed**: no dedicated NICs on this host | [`KERNEL_BYPASS_DESIGN.md`](cpp/bench/KERNEL_BYPASS_DESIGN.md) |
+
+Rendered table of every benchmark (dev + final): [`bench-latency/index.html`](bench-latency/index.html).
+The HDR histogram itself (3 significant figures, `[1 ns, 1 h]`, header-only,
+no dependencies) is cross-validated against an independent Python
+re-derivation of the HdrHistogram_c semantics on 4 synthetic corpora with
+**0 mismatches outside tolerance** —
+[`cpp/bench/hdr_histogram.hpp`](cpp/bench/hdr_histogram.hpp),
+[`cpp/bench/tools/crosscheck_report.json`](cpp/bench/tools/crosscheck_report.json).
 
 ---
 
@@ -164,10 +222,12 @@ The governance loop that rules every phase (no speculation): [docs/INTEGRITY.md]
 | Fault gate — injected failures on the real live path | exit 0, `verified=true` |
 | Service gate — 30 virtual days, renewals sealed + verified | exit 0, `errors=[]`, `outer_gaps=0`, 27/27 renewals |
 | G2 replay reconciliation, Rust vs Python (1.57M records/symbol) | `verdict: PASS`, byte-identical reports |
-| Production soak (live, 24 h) | preflight `PASS`, per-epoch verification `PASS` (Rust + Python), live incremental verification `oracle_identity: PASS` |
+| Production soak (live, >45 h) | preflight `PASS`, per-epoch verification `PASS` (Rust + Python), live incremental verification `oracle_identity: PASS` |
+| C++ suites + HDR cross-check | 74/74 tests green + 4/4 corpora PASS |
+| Benchmark CI artifacts (Linux + Windows) | downloadable dev JSONs on every green run |
 
 Artifacts: [evidence/](evidence/) — frozen release manifest, gate logs, reconciliation,
-live-run summary.
+live-run summary. Claims-to-evidence index: [docs/EVIDENCE.md](docs/EVIDENCE.md).
 
 ## Tech stack
 
@@ -177,10 +237,37 @@ live-run summary.
   digests (byte-identical contract), segment-chain audits.
 - **C++20** (MSVC `cl` on Windows, `g++` on Linux CI): ITCH 5.0, OUCH 5.0, Binance SBE,
   multicast UDP + sequence recovery, typed loss recovery, layered anti-loss capture, FIX 4.4
-  session — `cpp/`, all suites green on both platforms.
+  session, lock-free SPSC ring, header-only HDR latency histogram — `cpp/`, all suites green
+  on both platforms.
+- **Java 21 + Aeron 1.53.2** (official jars): the measured IPC demo
+  (`cpp/evidence/10-latency-elite/PHASE3/`).
 - Deterministic models for every live path, property/contract tests, red-green discipline.
 
-## Run it
+## 5-minute verification
+
+Clone, build every suite, run the measured benchmarks, and read the report —
+no API keys or special hardware needed:
+
+```bash
+git clone https://github.com/etor6233/bnnc-pro-elite.git
+cd bnnc-pro-elite
+
+# Linux (g++):
+bash cpp/build.sh all                     # every C++ suite + HDR cross-check
+bash cpp/bench/run_benchmarks.sh dev      # measured benchmarks (dev mode)
+# Windows (MSVC):
+powershell -NoProfile -ExecutionPolicy Bypass -File cpp\build.ps1 -Phase all
+powershell -NoProfile -ExecutionPolicy Bypass -File cpp\bench\run_benchmarks.ps1 -Mode dev
+```
+
+Then open [`bench-latency/index.html`](bench-latency/index.html) for the rendered
+p50/p99/p99.9/p99.99 tables (or read the JSONs under
+[`cpp/bench/benchmarks/`](cpp/bench/benchmarks)), and check the CI badge above — the same
+suites run green on Linux and Windows in GitHub Actions on every push, publishing the
+dev-mode JSONs as artifacts. The Aeron IPC demo re-runs with one command on a JDK 21 host:
+`powershell -ExecutionPolicy Bypass -File cpp\evidence\10-latency-elite\PHASE3\aeron-ipc\run_aeron_ipc_demo.ps1`
+
+## Run it (production capture service)
 
 ```powershell
 # build (release)
@@ -195,6 +282,19 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\run_hot_redundant_qu
 
 Operational details: [docs/RUNBOOK.md](docs/RUNBOOK.md). Full architecture walkthrough:
 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+
+## Project status (honest)
+
+**Built and verified:** Phases 1–2 (dual-lane capture → forensic journal → dual-language
+verification) with fault gates, service gates and a >45 h live soak; the C++ venue-connectivity
+layer (all suites green on Linux + Windows); the live SBE campaign audit; measured benchmarks
+with HDR percentiles; the Aeron IPC demo; kernel-bypass design documentation.
+
+**Open (by design):** the remaining roadmap gates (phases 3–15 run under
+`docs/INTEGRITY.md` governance and are not pre-built); kernel-bypass hardware validation
+(requires dedicated NICs or an Azure DPDK VM — planned in
+`cpp/bench/KERNEL_BYPASS_DESIGN.md`); the SBE production lane (gated by the capture policy).
+Nothing in this repository claims otherwise.
 
 ## License
 

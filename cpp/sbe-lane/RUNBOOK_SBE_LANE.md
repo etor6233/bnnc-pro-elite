@@ -1,105 +1,104 @@
 # RUNBOOK — SBE lane (candidate parallel lane, separate epochs)
 
-Estado: **ejecutable**. La lane SBE corre como CANDIDATA en paralelo con su
-propio directorio, sus propios epochs y su propia clave — nunca fusiona epochs
-con las lanes JSON (CAPTURE_CAMPAIGN_POLICY_V1.md §Feed evolution). La
-promoción a camino canónico sigue los gates de la política (comparación
-semántica exacta, medición, recovery, decisión explícita).
+Status: **executable and live-verified**. The SBE lane runs as a PARALLEL
+CANDIDATE with its own directory, its own epochs and its own key — it never
+merges epochs with the JSON lanes (CAPTURE_CAMPAIGN_POLICY_V1.md, "Feed
+evolution"). Promotion to a canonical path follows the policy gates (exact
+semantic comparison, measurement, recovery, explicit decision).
 
-## Medición punta a punta (ya instrumentada)
+## Single live-run requirement
 
-Cada frame capturado escribe `sbe-telemetry.jsonl` con el **event time del
-venue** (primer campo del schema SBE, `eventTime` µs en offset 8 — se lee del
-propio frame, sin depender de nada externo) y el **instante de recepción
-local**. La pata de red se mide así:
+A Binance **Ed25519 market-data-only API key** (spec: captured
+`sbe-market-data-streams.md`, SHA256 `3E945F52…`; the key travels in the
+`X-MBX-APIKEY` header of the WebSocket handshake). Without a key the venue
+rejects the handshake (HTTP 400, verified live). The key is taken from the
+`BINANCE_SBE_API_KEY` environment variable and is NEVER written to disk.
 
-```powershell
-python cpp\sbe-lane\measure_sbe_lane.py --dir <dir-de-la-lane> --out measure.json
-```
-
-`measure.json` trae, por tipo de mensaje: delay p50/p99/mean/max entre el
-venue y nosotros, y el inter-arrival (cadencia). El offset de reloj se mide
-contra `/api/v3/time` (incertidumbre declarada ±RTT/2, ~±190 ms en este host
-sin PTP). Las patas LOCALES (recepción→almacenado→decodificado) son ns/µs y
-están medidas en los benchmarks de FASE 5 (SBE decode 83 ns p50) — la red
-domina por ~5 órdenes de magnitud.
-
-## Cómo decidimos si la corrida es "perfecta" (criterios medibles)
-
-| # | Criterio | Cómo se mide | Umbral esperado en este host |
-|---|---|---|---|
-| 1 | Cadencia real | `measure_sbe_lane.py` inter-arrival | depth@20ms → p50 ≈ 20 ms; sin ventanas vacías sin tipar |
-| 2 | Cero corrupción | `sbe_decode_cli.exe <dir>\frames.sbe` | exit 0 sobre el 100% de los frames |
-| 3 | Journal íntegro | re-verificación de la cadena SHA-256 | cadena válida; huecos entre conexiones = `GAP_TYPED`, cero silencio |
-| 4 | Delay punta a punta | `measure_sbe_lane.py` | wire p50 ≈ 120 ms (medido hoy), p99 acotado, incertidumbre declarada |
-| 5 | Igualdad semántica vs JSON | ventana solapada de ambas lanes | trades idénticos por trade id; libro converge (gate de promoción de la política) |
-| 6 | Rotación | `--max-conn-s 82800` | 23 h sin pérdida, hueco de rotación TIPADO |
-
-**"Perfecta" = criterios 1-4 sin una sola excepción en la corrida completa,
-más el 5 en la ventana de comparación, más la aceptación formal del gate de
-endurance JSON (política).** Hasta entonces la lane es candidata con evidencia
-medida, no un claim.
-
-## Requisito único para correr en vivo
-
-Una **API key Ed25519 market-data-only** de Binance (spec:
-`sbe-market-data-streams.md` capturada, SHA256 `3E945F52…`; la key va en el
-header `X-MBX-APIKEY` del handshake WebSocket). Sin key, el endpoint rechaza
-la conexión — es el único bloqueo externo.
-
-## Compilar y probar (sin key, contra mock local)
+## Build and test (no key, against a local mock)
 
 ```powershell
 # Windows
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File cpp\build.ps1 -Phase all
 python -m pip install "websockets==17.0.1"
 $env:PYTHONPATH = "cpp\sbe-lane"
-python -m unittest discover -s cpp\sbe-lane\tests -v    # 3/3 green
+python -m unittest discover -s cpp\sbe-lane\tests -v    # 6/6 green
 
 # Linux
 bash cpp/build.sh all
 PYTHONPATH=cpp/sbe-lane python3 -m unittest discover -s cpp/sbe-lane/tests -v
 ```
 
-## Correr en vivo (con key)
+## Run live (with the key)
 
 ```powershell
-$env:BINANCE_SBE_API_KEY = "<ED25519_MARKET_DATA_ONLY>"
+$env:BINANCE_SBE_API_KEY = "<ED25519_MARKET_DATA_ONLY_KEY>"
 python cpp\sbe-lane\sbe_lane.py `
   --url "wss://stream-sbe.binance.com:9443/stream?streams=btcusdt@depth20/btcusdt@depth/btcusdt@trade/btcusdt@bestBidAsk/ethusdt@depth20/ethusdt@depth/ethusdt@trade/ethusdt@bestBidAsk" `
-  --out "D:\captures\sbe-<fecha-hora>" `
+  --out "D:\captures\sbe-20260920" `
   --duration 0 `
   --max-conn-s 82800
 ```
 
-- `--duration 0` = corre hasta rotación/terminación; `--max-conn-s 82800` = 23 h
-  (límite del venue: 24 h por conexión; rotación preventiva como la lane JSON).
-- La key NO se escribe en ningún archivo de salida (solo viaja en el
-  handshake; el journal registra `api_key_present: true` sin la key).
+- `--duration 0` = run until rotation/termination; `--max-conn-s 82800` =
+  23 h (venue limit: 24 h per connection; preventive rotation like the JSON
+  lane).
+- The key is NOT written to any output file (it travels only in the
+  handshake; the journal records `api_key_present: true` without the key).
 
-## Qué escribe (create-only, todo dentro de --out)
+## What it writes (create-only, all inside --out)
 
-| Archivo | Contenido |
+| File | Content |
 |---|---|
-| `frames.sbe` | frames SBE crudos, prefijados por longitud u32-LE |
-| `sbe-events.jsonl` | journal hash-chain (SHA-256): LANE_START, FRAME (sha256+template_id), SERVER_SHUTDOWN, CONN_CLOSED, TRANSPORT_DEAD, GAP_TYPED (rango de pared exacto entre conexiones), LANE_END |
-| `sbe-terminal.json` | inventario terminal: archivos, bytes, SHA-256, conteo de frames |
+| `frames.sbe` | raw SBE frames, u32-LE length prefixed |
+| `sbe-events.jsonl` | SHA-256 hash-chained journal: LANE_START, FRAME (sha256+template_id), SERVER_SHUTDOWN, CONN_CLOSED, TRANSPORT_DEAD, GAP_TYPED (exact wall range between connections), LANE_END |
+| `sbe-terminal.json` | terminal inventory: files, bytes, SHA-256, frame count |
+| `sbe-telemetry.jsonl` | per frame: venue event_time_us (first schema field) + local receive wall/monotonic |
 
-## Verificar una corrida
+## Verify a run
 
 ```powershell
-cpp\build\bin\sbe_decode_cli.exe <dir>\frames.sbe   # JSON por frame, exit 0 = todo decodificó
+cpp\build\bin\sbe_decode_cli.exe <dir>\frames.sbe            # JSON per frame, exit 0 = all decoded
+cpp\build\bin\sbe_decode_cli.exe --summary <dir>\frames.sbe  # per-template counts, no per-frame spam
+python cpp\sbe-lane\measure_sbe_lane.py --dir <dir> --out measure.json   # wire-leg delay p50/p99
+python latency-probe-20260918\audit_sbe_lane.py <dir> cpp\build\bin\sbe_decode_cli.exe  # streaming audit
 ```
 
-El decodificador es el mismo de FASE 2 (schema pineado `6EA32846…`,
-cross-check contra el codec oficial de Simple Binary Encoding).
+The decoder is the PHASE 2 one (pinned schema `6EA32846…`, cross-checked
+against the official Simple Binary Encoding code generator).
 
-## Límites declarados
+## End-to-end measurement (instrumented)
 
-- La lane es CANDIDATA; el camino JSON sigue siendo el oráculo de corrección.
-- Los huecos entre conexiones quedan TIPADOS con rango de pared; cero pérdida
-  silenciosa.
-- La reconciliación contra el backfill REST del venue (aggTrades/depth) para
-  ventanas perdidas es la capa documentada en `cpp/resilience/`
-  (EVIDENCE_03C) — integrarla a esta lane es el siguiente paso de política,
-  no un reemplazo del gate actual.
+Every captured frame writes `sbe-telemetry.jsonl` with the **venue event time**
+(first schema field, `eventTime` µs at offset 8 — read from the frame itself)
+and the **local receive instant**. `measure_sbe_lane.py` computes the wire-leg
+distribution per message type with a clock offset measured against
+`/api/v3/time` (declared uncertainty ±RTT/2, ~±190 ms on this host without
+PTP). The LOCAL legs (receive→store→decode) are ns/µs and are measured by the
+PHASE 5 benchmarks (SBE decode 83 ns p50) — the network dominates by ~5
+orders of magnitude.
+
+## How we decide a run is "perfect" (measurable criteria)
+
+| # | Criterion | How it is measured | Expected on this host |
+|---|---|---|---|
+| 1 | Real cadence | `measure_sbe_lane.py` inter-arrival | depth@20ms → p50 ≈ 20 ms; no untyped silent windows |
+| 2 | Zero corruption | `sbe_decode_cli.exe --summary <dir>\frames.sbe` | exit 0 over 100% of the frames |
+| 3 | Journal integrity | re-verification of the SHA-256 chain | valid chain; inter-connection holes = `GAP_TYPED`, zero silence |
+| 4 | End-to-end delay | `measure_sbe_lane.py` | wire p50 ≈ 125 ms (measured), bounded p99, declared uncertainty |
+| 5 | Semantic equality vs JSON | overlapping window of both lanes | identical trades by trade id; book converges (policy promotion gate) |
+| 6 | Rotation | `--max-conn-s 82800` | 23 h without loss, rotation hole TYPED |
+
+**"Perfect" = criteria 1-4 without a single exception over the full run, plus
+5 on the comparison window, plus the formal acceptance of the JSON endurance
+gate (policy).** Until then the lane is a candidate with measured evidence,
+not a claim.
+
+## Declared limits
+
+- The lane is a CANDIDATE; the JSON path remains the correctness oracle.
+- Holes between connections stay TYPED with the exact wall range; zero silent
+  loss.
+- Reconciliation against the venue REST backfill (aggTrades/depth) for lost
+  windows is the documented layer in `cpp/resilience/` (EVIDENCE_03C) —
+  integrating it into this lane is the next policy step, not a replacement of
+  the current gate.
