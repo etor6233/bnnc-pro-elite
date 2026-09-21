@@ -1,4 +1,4 @@
-﻿# FINAL REPORT — C++ venue-connectivity layer + CI + benchmarks (2026-09-18)
+# FINAL REPORT — C++ venue-connectivity layer + CI + benchmarks (2026-09-18)
 
 Full execution of the venue-connectivity engineering instruction (PHASES 1-8
 — C++ venue connectivity, typed loss recovery, measured benchmarks, CI and
@@ -49,4 +49,22 @@ repository `etor6233/bnnc-pro-elite` (branch `main`).
   binaries were NOT touched: all new work lives in `cpp/` and in the clean
   clone at `cpp/public-repo/`, never in the live tree.
 
-Signed by the executing agent — 2026-09-18.
+
+## PRODUCTION HANDOFF — 2026-09-21 (recorded state before restart)
+
+- Previous continuous run (`hrs-5971e1d2cb41`): **86.4 h healthy** at stop
+  decision — journal hash-chain advancing, 23 processes (dual-lane raw +
+  live arbitration sidecar), 20 symbol epochs launched/ready, zero raw-lane
+  gaps/deaths/silences; 50 typed `OBSERVER_FAILED` events accumulated on the
+  live-arbitration sidecar (typed, visible; raw capture unaffected). Expected
+  honest terminal after the cooperative stop:
+  `CAPTURE_COMPLETE_WITH_OBSERVABILITY_FAILURES`.
+- SBE parallel campaign (`captura-sbe-20260919b`): completed its full 23 h
+  cycle cleanly — 13,253,624 frames, 0 typed gaps, full decode
+  13,253,624/13,253,624 OK (see EVIDENCE_09).
+- Restart command (elevated console, from `Binance\`):
+  `powershell -NoProfile -ExecutionPolicy Bypass -File scripts\run_hot_redundant_qualification.ps1 -Mode Continuous`
+  (defaults: EpochWindowSeconds 14400, TimeScale 1; no global horizon).
+- Checkpoints of the NEW run: `WINDOW_MILESTONE` events at **24 h / 7 d /
+  30 d** in `artifacts\hrs\hrs-<nonce>\service-events.jsonl`; terminal state
+  after the next cooperative stop must be verified in both verifiers.
