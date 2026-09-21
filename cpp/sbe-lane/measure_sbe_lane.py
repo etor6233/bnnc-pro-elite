@@ -11,7 +11,7 @@ N samples, declared uncertainty = median_RTT/2), or passed explicitly with
 --offset for reproducible offline analysis (the capture test uses this).
 
 The local legs (receive -> store, store -> decode) are nanoseconds/microseconds
-and are measured by the FASE 5 benchmarks (SBE decode 83 ns p50) — the wire
+and are measured by the PHASE 5 benchmarks (SBE decode 83 ns p50) — the wire
 leg dominates by ~5 orders of magnitude.
 """
 from __future__ import annotations

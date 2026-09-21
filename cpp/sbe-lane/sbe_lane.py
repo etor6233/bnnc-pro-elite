@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""SBE lane capture — executable FASE 7 lane for Binance Spot SBE streams.
+"""SBE lane capture — executable PHASE 7 lane for Binance Spot SBE streams.
 
 Policy (CAPTURE_CAMPAIGN_POLICY_V1.md §Feed evolution): SBE runs as a SEPARATE
 lane with its OWN epochs and dataset versions; it never merges with JSON

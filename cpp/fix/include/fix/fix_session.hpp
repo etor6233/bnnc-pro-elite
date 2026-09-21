@@ -1,4 +1,4 @@
-// fix/fix_session.hpp — minimal FIX Session Layer (FASE 4).
+// fix/fix_session.hpp — minimal FIX Session Layer (PHASE 4).
 //
 // SPEC SOURCES (nothing invented):
 //  - MARKET_MICROSTRUCTURE_EXCHANGE_SYSTEMS.md §5.5 [SPEC] (annotated):

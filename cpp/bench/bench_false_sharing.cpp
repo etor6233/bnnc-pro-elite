@@ -1,4 +1,4 @@
-// bench/bench_false_sharing.cpp — FASE 2 (latency elite): MEASURED evidence
+// bench/bench_false_sharing.cpp — PHASE 2 (latency elite): MEASURED evidence
 // of the cost of false sharing on x86 cache lines.
 //
 // Two layouts of the same logical state (two uint64_t counters, incremented
@@ -148,7 +148,7 @@ int main(int argc, char** argv) {
     bench::write_json(out_path, json.str());
     std::printf("wrote %s\n", out_path.c_str());
 
-    // HDR per-op latency percentiles for both layouts (FASE 2 requirement).
+    // HDR per-op latency percentiles for both layouts (PHASE 2 requirement).
     // Samples are in picoseconds; the histogram covers [1 ps, 1 h] at 3
     // significant figures and the report converts back to nanoseconds.
     auto hdr_of = [&](const std::vector<uint64_t>& samples) {

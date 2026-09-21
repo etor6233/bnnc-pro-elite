@@ -1,5 +1,5 @@
 // bench/tools/hdr_cli.cpp — command-line driver for the HDR histogram
-// (FASE 1 cross-check). Reads one base-10 int64 per line from a values file,
+// (PHASE 1 cross-check). Reads one base-10 int64 per line from a values file,
 // records it into bench::HdrHistogram and prints a small JSON result with
 // count/min/max and the standard percentile set. Used by
 // bench/tools/crosscheck_hdr.py to compare the C++ implementation against the

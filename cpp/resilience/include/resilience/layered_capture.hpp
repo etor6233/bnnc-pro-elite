@@ -1,5 +1,5 @@
 // resilience/layered_capture.hpp — layered anti-loss capture architecture
-// (FASE 3-C). Implements ELITE_LOSS_RECOVERY_20260918.md §6:
+// (PHASE 3-C). Implements ELITE_LOSS_RECOVERY_20260918.md §6:
 //   1. source duplication: dual multicast A/B + WS JSON as independent paths;
 //   2. layered failover (FCP): live feed -> local cache -> venue API -> REST;
 //   3. gap reconciliation against the authoritative source after recovery;

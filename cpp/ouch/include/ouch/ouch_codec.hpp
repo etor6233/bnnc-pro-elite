@@ -11,7 +11,7 @@
 //    its own semantics incl. cumulative liability over the chain; only the
 //    response confirms the outcome).
 //
-// Implemented scope (per instruction FASE 1-4 checklist "OUCH-semántica"):
+// Implemented scope (per instruction PHASE 1-4 checklist "OUCH-semántica"):
 //   inbound: Enter Order (O, spec 2.1), Replace Order (U, spec 2.2),
 //            Cancel Order (X, spec 2.3);
 //   outbound: Order Accepted (A, spec 3.2), Order Replaced (U, spec 3.3),

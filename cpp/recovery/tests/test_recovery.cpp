@@ -1,8 +1,8 @@
-// recovery/tests/test_recovery.cpp — FASE 3-B suite: typed total-silence
+// recovery/tests/test_recovery.cpp — PHASE 3-B suite: typed total-silence
 // detection with failover, A/B arbitration on packet loss, snapshot bridging,
 // Binance diff-depth book continuity and anticipation signals.
 //
-// Verification items (per instruction FASE 3-B):
+// Verification items (per instruction PHASE 3-B):
 //  (a) total silence -> typed detection within the declared deadline and
 //      failover to the other lane;
 //  (b) packet loss on feed A -> continuous derived state via B or snapshot,
@@ -18,7 +18,7 @@
 #include <sbe/binance_sbe.hpp>
 
 // Official generated encoder for a real SBE DepthDiffStreamEvent (same pinned
-// schema) — integration with the FASE 2 decoder.
+// schema) — integration with the PHASE 2 decoder.
 #include "spot_stream/DepthDiffStreamEvent.h"
 
 using namespace recovery;
@@ -239,7 +239,7 @@ AFX_TEST(book_diff_continuity_and_resync) {
 }
 
 // Integration: a REAL SBE DepthDiffStreamEvent (official encoder, pinned
-// schema) decoded by the FASE 2 decoder and applied to the derived book.
+// schema) decoded by the PHASE 2 decoder and applied to the derived book.
 AFX_TEST(sbe_depth_diff_to_book_integration) {
     char buffer[512];
     std::memset(buffer, 0, sizeof(buffer));

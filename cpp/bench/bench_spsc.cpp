@@ -1,4 +1,4 @@
-// bench/bench_spsc.cpp — FASE 2 (latency elite): measured benchmark of the
+// bench/bench_spsc.cpp — PHASE 2 (latency elite): measured benchmark of the
 // bounded lock-free SPSC ring (net/spsc_ring.hpp), 1 producer / 1 consumer.
 //
 // What is measured (all real, all on this host):

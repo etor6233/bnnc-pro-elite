@@ -1,8 +1,8 @@
-// resilience/tests/test_resilience.cpp — FASE 3-C suite: source duplication,
+// resilience/tests/test_resilience.cpp — PHASE 3-C suite: source duplication,
 // layered failover (live -> cache -> REST backfill), provenance journal and
 // authoritative reconciliation.
 //
-// Verification (per instruction FASE 3-C): a test kills an entire path,
+// Verification (per instruction PHASE 3-C): a test kills an entire path,
 // recovers via the other path + backfill, and proves the final dataset
 // contains EVERYTHING the venue emitted, with declared provenance.
 #include <afx/test_framework.hpp>

@@ -1,6 +1,6 @@
-// bench/bench_util.hpp — honest benchmark helpers (FASE 5).
+// bench/bench_util.hpp — honest benchmark helpers (PHASE 5).
 //
-// Rules enforced (per instruction FASE 5):
+// Rules enforced (per instruction PHASE 5):
 //  - numbers are MEASURED only (p50/p99/throughput from real samples);
 //  - anti-cheat: no memoization of the measured case — every iteration
 //    decodes into a fresh output and the result feeds a volatile sink so the
@@ -40,7 +40,7 @@ struct Stats {
     double throughput_per_s = 0;
 };
 
-// HDR (High Dynamic Range) statistics from the FASE 1 histogram: p50/p99/
+// HDR (High Dynamic Range) statistics from the PHASE 1 histogram: p50/p99/
 // p99.9/p99.99 with 3 significant figures over [1 ns, 1 hour]. These are the
 // scientific-latency numbers (HdrHistogram_c semantics, commit
 // 1343a18908c6); they complement the nearest-rank Stats above.

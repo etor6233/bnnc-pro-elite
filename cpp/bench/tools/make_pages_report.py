@@ -1,4 +1,4 @@
-"""make_pages_report.py — static latency report for GitHub Pages (FASE 5).
+"""make_pages_report.py — static latency report for GitHub Pages (PHASE 5).
 
 Reads every measured benchmark JSON under cpp/bench/benchmarks/ (dev and
 final modes, nearest-rank and HDR percentile files) and renders a single
@@ -6,7 +6,7 @@ self-contained bench-latency/index.html page: one table per benchmark with
 p50/p99/p99.9/p99.99, min/max/mean, throughput and the anti-cheat/measured-on
 notes. Stdlib only; the generated page carries no runtime dependencies.
 
-Deploy (documented in cpp/evidence/10-latency-elite/FASE5/): the committed
+Deploy (documented in cpp/evidence/10-latency-elite/PHASE 5/): the committed
 page can be served via GitHub Pages by selecting this branch and the
 /bench-latency folder in the Pages settings — no build step on the server.
 """

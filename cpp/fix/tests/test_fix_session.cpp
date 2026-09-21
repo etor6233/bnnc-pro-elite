@@ -1,4 +1,4 @@
-// fix/tests/test_fix_session.cpp — FASE 4 suite: FIX codec golden vectors,
+// fix/tests/test_fix_session.cpp — PHASE 4 suite: FIX codec golden vectors,
 // malformed rejection, logon/heartbeat, gap -> ResendRequest -> PossDup
 // retransmission, SequenceReset-GapFill and sequence persistence.
 #include <afx/test_framework.hpp>

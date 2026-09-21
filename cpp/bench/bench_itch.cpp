@@ -1,6 +1,6 @@
-// bench/bench_itch.cpp — FASE 5 measured benchmarks: ITCH 5.0 decode latency
+// bench/bench_itch.cpp — PHASE 5 measured benchmarks: ITCH 5.0 decode latency
 // p50/p99 + throughput. Decodes the spec-derived golden vectors (the exact
-// bytes the FASE 1 suite validates against), rotated across iterations.
+// bytes the PHASE 1 suite validates against), rotated across iterations.
 // Modes: dev (fast) / final (held-out larger N), written to
 // bench/benchmarks/*.json — numbers are measured, never estimated.
 #include <bench/bench_util.hpp>
@@ -98,7 +98,7 @@ int main(int argc, char** argv) {
     bench::write_json(out_path, json.str());
     std::printf("wrote %s\n", out_path.c_str());
 
-    // HDR percentile report (FASE 1 integration): p50/p99/p99.9/p99.99 with
+    // HDR percentile report (PHASE 1 integration): p50/p99/p99.9/p99.99 with
     // the 3-significant-figure histogram over the same measured samples.
     const auto hs = bench::hdr_stats(agg);
     std::ostringstream hjson;

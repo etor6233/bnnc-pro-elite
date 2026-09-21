@@ -1,5 +1,5 @@
 // net/mcast_feed.hpp — low-latency multicast UDP transport with sequence
-// recovery (FASE 3).
+// recovery (PHASE 3).
 //
 // SPEC SOURCES (nothing invented):
 //  - NETWORKING_DISTRIBUTED_STREAMING.md §4 (UDP): minimum UDP contract
@@ -40,7 +40,7 @@
 #include <vector>
 
 // Portable socket handle: Winsock2 on Windows, POSIX sockets elsewhere.
-// (Portability needed for the Linux CI leg of FASE 6.)
+// (Portability needed for the Linux CI leg of PHASE 6.)
 #ifdef _WIN32
 #include <winsock2.h>
 namespace net {

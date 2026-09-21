@@ -1,5 +1,5 @@
 // recovery/feed_guard.hpp — instant loss detection + elite recovery
-// (FASE 3-B). Implements ELITE_LOSS_RECOVERY_20260918.md §0-§4.
+// (PHASE 3-B). Implements ELITE_LOSS_RECOVERY_20260918.md §0-§4.
 //
 // Two distinct problems (ELITE_LOSS_RECOVERY §0):
 //  A) TOTAL SILENCE — the flow dies. Detection by FEED CADENCE (depth@20ms:

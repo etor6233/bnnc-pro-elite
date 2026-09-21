@@ -194,7 +194,7 @@ class HdrHistogram:
         return total / float(self.total_count)
 
 
-# Percentile set used by every FASE 1 report (documented once, reused).
+# Percentile set used by every PHASE 1 report (documented once, reused).
 STANDARD_PERCENTILES = (0.0, 50.0, 90.0, 99.0, 99.9, 99.99, 100.0)
 
 

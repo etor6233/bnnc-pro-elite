@@ -1,5 +1,5 @@
 // sbe/binance_sbe.hpp — hand-written decoder for the PINNED Binance Spot SBE
-// schema (FASE 2).
+// schema (PHASE 2).
 //
 // SPEC SOURCE (nothing invented): the pinned official schema
 //   external-review/low-latency-reference/binance-sbe-official/stream_1_0.xml

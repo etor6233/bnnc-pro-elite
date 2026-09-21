@@ -1,5 +1,5 @@
 // afx/test_framework.hpp — minimal single-header test framework for the C++
-// venue-connectivity suites (FASE 1-4, FASE 5 benches). No external dependencies.
+// venue-connectivity suites (PHASE 1-4, PHASE 5 benches). No external dependencies.
 //
 // Usage:
 //   AFX_TEST(my_test) { AFX_EXPECT(x); AFX_EXPECT_EQ(a, b); }

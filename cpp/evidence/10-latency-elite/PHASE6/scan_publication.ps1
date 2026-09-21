@@ -68,12 +68,12 @@ $publicDocs = @(
     "$repo\README.md", "$repo\docs\*.md", "$repo\portfolio\*.md",
     "$repo\cpp\README.md", "$repo\cpp\evidence\*.md",
     "$repo\cpp\evidence\10-latency-elite\*.md",
-    "$repo\cpp\evidence\10-latency-elite\FASE*\*.md",
+    "$repo\cpp\evidence\10-latency-elite\PHASE*\*.md",
     "$repo\cpp\bench\KERNEL_BYPASS_DESIGN.md", "$repo\bench-latency\*.html"
 )
 # The ACTAs are internal execution records, Spanish by established
 # convention (see the previous acta); excluded from the public-docs check.
-$spanish = '(?i)\b(que|para|como|está|están|además|después|antes|mientras|cuando|según|también|pero|este|esta|estos|estas|del|los|las|una|un|ser|hacer|ejecutar|archivo|fichero|evidencia|prueba|fase|fases|instrucción|instrucciones|clave|propietario|dueño|publicado|publicada|publicación|correr|corrida|medición|medir|sección)\b'
+$spanish = '(?i)\b(que|para|como|está|están|además|después|antes|mientras|cuando|según|también|pero|este|esta|estos|estas|del|los|las|una|un|ser|hacer|ejecutar|archivo|fichero|evidencia|prueba|PHASE|PHASEs|instrucción|instrucciones|clave|propietario|dueño|publicado|publicada|publicación|correr|corrida|medición|medir|sección)\b'
 $langHits = Get-ChildItem -Path $publicDocs -File | Select-String -Pattern $spanish | Select-Object -First 10
 if ($langHits) { $langHits | ForEach-Object { Add-Result "language" "HIT in $($_.Path.Substring($repo.Length)):$($_.LineNumber): $($_.Line.Trim().Substring(0, [Math]::Min(80, $_.Line.Trim().Length)))" } }
 else { Add-Result "language" "0 hits (no Spanish function words in public docs)" }

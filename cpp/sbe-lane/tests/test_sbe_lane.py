@@ -1,4 +1,4 @@
-"""SBE lane tests (FASE 7 executable): capture pipeline against a LOCAL mock
+"""SBE lane tests (PHASE 7 executable): capture pipeline against a LOCAL mock
 SBE server, journal integrity and decode verification via the C++ CLI.
 
 Runs WITHOUT any Binance key: the mock serves the official-encoder golden

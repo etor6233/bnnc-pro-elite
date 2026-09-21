@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# run_benchmarks.sh — Linux mirror of run_benchmarks.ps1 (FASE 5 CI leg).
+# run_benchmarks.sh — Linux mirror of run_benchmarks.ps1 (PHASE 5 CI leg).
 # Builds and runs the measured benchmark suite in dev mode (fast) and final
 # mode (held-out sizes). Every number lands in bench/benchmarks/*.json;
-# nothing is estimated. FASE 1 adds the HDR percentile reports (bench_*_hdr.json).
+# nothing is estimated. PHASE 1 adds the HDR percentile reports (bench_*_hdr.json).
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")" && pwd)"
@@ -28,7 +28,7 @@ compile "$BIN/bench_sbe" -I"$CPP_ROOT/sbe/include" -I"$CPP_ROOT/tools/sbe-tool/g
     "$ROOT/bench_sbe.cpp" "$CPP_ROOT/sbe/src/binance_sbe.cpp"
 compile "$BIN/bench_mcast" -I"$CPP_ROOT/net/include" \
     "$ROOT/bench_mcast.cpp" "$CPP_ROOT/net/src/mcast_feed.cpp"
-# FASE 2 (latency elite): false sharing / cache-line and SPSC ring benches.
+# PHASE 2 (latency elite): false sharing / cache-line and SPSC ring benches.
 compile "$BIN/bench_false_sharing" "$ROOT/bench_false_sharing.cpp"
 compile "$BIN/bench_spsc" -I"$CPP_ROOT/net/include" "$ROOT/bench_spsc.cpp"
 

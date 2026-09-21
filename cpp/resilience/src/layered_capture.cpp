@@ -1,4 +1,4 @@
-// resilience/layered_capture.cpp — layered anti-loss engine (FASE 3-C).
+// resilience/layered_capture.cpp — layered anti-loss engine (PHASE 3-C).
 //
 // Implements ELITE_LOSS_RECOVERY_20260918.md §6 with honest provenance: every
 // journal record carries captured-live | backfilled | gap-typed plus a
@@ -127,7 +127,7 @@ void LayeredCapture::on_backfill(const BackfillFn& fetch, uint32_t from,
 
 void LayeredCapture::on_path_dead(uint32_t path_id,
                                   recovery::SilenceCause cause) {
-    // The typed cause is produced by the FASE 3-B recovery::CadenceGuard /
+    // The typed cause is produced by the PHASE 3-B recovery::CadenceGuard /
     // watchdog layer that surrounds this engine; here it only marks the
     // failover event for the journal's evidence chain.
     CaptureEvent ev;

@@ -1,4 +1,4 @@
-// net/tests/test_mcast.cpp — FASE 3 suite: framing, sequence recovery,
+// net/tests/test_mcast.cpp — PHASE 3 suite: framing, sequence recovery,
 // real multicast join/leave/loss/retransmission, SPSC ring.
 #include <afx/test_framework.hpp>
 
@@ -276,7 +276,7 @@ AFX_TEST(multicast_join_leave_receive) {
 
 // End-to-end: publisher drops one datagram on purpose, receiver detects the
 // gap instantly, NAKs the repair endpoint, publisher retransmits, receiver
-// reconciles the full sequence (FASE 3 verification).
+// reconciles the full sequence (PHASE 3 verification).
 AFX_TEST(multicast_loss_retransmission_e2e) {
     McastConfig cfg;
     cfg.group = kGroup;

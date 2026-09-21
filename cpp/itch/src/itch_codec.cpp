@@ -1,4 +1,4 @@
-// itch/itch_codec.cpp — Nasdaq TotalView-ITCH 5.0 decoder (FASE 1).
+// itch/itch_codec.cpp — Nasdaq TotalView-ITCH 5.0 decoder (PHASE 1).
 //
 // Implementation follows the captured, SHA256-pinned official spec
 // (NQTVITCHSpecification.pdf; text in cpp/tools/extracted/NQTVITCHSpecification.txt).

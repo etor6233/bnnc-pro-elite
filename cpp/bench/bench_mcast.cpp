@@ -1,6 +1,6 @@
-// bench/bench_mcast.cpp — FASE 5 measured benchmarks: multicast publication
+// bench/bench_mcast.cpp — PHASE 5 measured benchmarks: multicast publication
 // (UDP sendto on a real loopback multicast socket) latency p50/p99 +
-// throughput. The net framing of the FASE 3 transport is used.
+// throughput. The net framing of the PHASE 3 transport is used.
 #include <bench/bench_util.hpp>
 
 #include <cstdint>
@@ -97,7 +97,7 @@ int main(int argc, char** argv) {
     bench::write_json(out_path, json.str());
     std::printf("wrote %s\n", out_path.c_str());
 
-    // HDR percentile report (FASE 1 integration): p50/p99/p99.9/p99.99.
+    // HDR percentile report (PHASE 1 integration): p50/p99/p99.9/p99.99.
     const auto hs = bench::hdr_stats(agg);
     std::ostringstream hjson;
     hjson << "{\n"

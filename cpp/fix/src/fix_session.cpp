@@ -1,4 +1,4 @@
-// fix/fix_session.cpp — FIX codec + minimal session layer (FASE 4).
+// fix/fix_session.cpp — FIX codec + minimal session layer (PHASE 4).
 //
 // Semantics per MARKET_MICROSTRUCTURE_EXCHANGE_SYSTEMS.md §5.5 [SPEC] and the
 // QuickFIX reference (captured). Standard header/trailer: 8=BeginString,

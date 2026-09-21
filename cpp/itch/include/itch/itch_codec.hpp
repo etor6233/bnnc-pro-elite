@@ -1,4 +1,4 @@
-// itch/itch_codec.hpp — Nasdaq TotalView-ITCH 5.0 decoder (FASE 1).
+// itch/itch_codec.hpp — Nasdaq TotalView-ITCH 5.0 decoder (PHASE 1).
 //
 // SPEC SOURCE (nothing invented): every field offset/length/type in this file
 // comes from the captured official spec, SHA256-pinned in
@@ -26,7 +26,7 @@ namespace itch {
 
 // Message type byte, per spec section headers (1.1, 1.2.x, 1.3.x, 1.4.x,
 // 1.5.x). Not all TotalView-ITCH messages are implemented: this decoder covers
-// the FASE 1 scope plus the book-relevant administrative messages whose tables
+// the PHASE 1 scope plus the book-relevant administrative messages whose tables
 // are captured: S, R, H, A, F, E, C, X, D, U, P, Q, B.
 enum class MessageType : char {
     SystemEvent = 'S',

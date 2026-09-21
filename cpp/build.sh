@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# build.sh — builds and runs the C++ suites on Linux (FASE 6 CI leg).
+# build.sh — builds and runs the C++ suites on Linux (PHASE 6 CI leg).
 # Mirrors build.ps1 (Windows/MSVC) with g++.
 set -euo pipefail
 
@@ -105,7 +105,7 @@ build_bench() {
     python3 "$ROOT/bench/tools/crosscheck_hdr.py" \
         --exe "$BIN/hdr_cli" \
         --out "$ROOT/bench/tools/crosscheck_report.json" \
-        --evidence "$ROOT/evidence/10-latency-elite/FASE1"
+        --evidence "$ROOT/evidence/10-latency-elite/PHASE 1"
 }
 
 build_spsc() {

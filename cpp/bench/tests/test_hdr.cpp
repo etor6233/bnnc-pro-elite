@@ -1,4 +1,4 @@
-// bench/tests/test_hdr.cpp — FASE 1 (latency elite): unit tests for the
+// bench/tests/test_hdr.cpp — PHASE 1 (latency elite): unit tests for the
 // header-only HDR latency histogram (bench/hdr_histogram.hpp).
 //
 // Semantics tested here are the HdrHistogram_c contract (BSD-2/CC0 dual

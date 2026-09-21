@@ -1,4 +1,4 @@
-// net/tests/test_spsc.cpp — FASE 2 (latency elite): functional + static
+// net/tests/test_spsc.cpp — PHASE 2 (latency elite): functional + static
 // tests for the bounded lock-free SPSC ring (net/spsc_ring.hpp).
 //
 // The cache-line guarantees (head_ and tail_ on distinct 64-byte lines) are

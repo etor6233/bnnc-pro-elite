@@ -1,5 +1,5 @@
 // sbe/tests/test_sbe.cpp — golden-vector + cross-check + malformed suite for
-// the hand-written Binance SBE decoder (FASE 2).
+// the hand-written Binance SBE decoder (PHASE 2).
 //
 // Golden vectors are produced with the OFFICIAL SBE code generator's C++
 // encoder (same pinned schema); every golden vector is decoded BOTH by the

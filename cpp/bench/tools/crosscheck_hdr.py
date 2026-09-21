@@ -1,4 +1,4 @@
-"""crosscheck_hdr.py — FASE 1 cross-validation of the C++ HDR histogram.
+"""crosscheck_hdr.py — PHASE 1 cross-validation of the C++ HDR histogram.
 
 Runs the compiled C++ driver (cpp/bench/tools/hdr_cli.cpp) over synthetic
 corpora and compares its percentile output against hdr_reference.py, the

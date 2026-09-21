@@ -1,6 +1,6 @@
 // bench/hdr_histogram.hpp — header-only HDR (High Dynamic Range) latency
 // histogram with configurable precision, record() and value_at_percentile()
-// (FASE 1 latency-elite).
+// (PHASE 1 latency-elite).
 //
 // Semantics adapted from HdrHistogram_c (the canonical C port of Gil Tene's
 // HdrHistogram), captured 2026-09-19 at commit 1343a18908c6 under

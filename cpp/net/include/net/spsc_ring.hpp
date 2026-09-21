@@ -1,5 +1,5 @@
 // net/spsc_ring.hpp — bounded lock-free single-producer/single-consumer ring
-// buffer (FASE 3 optional item, shared-memory inter-process pattern).
+// buffer (PHASE 3 optional item, shared-memory inter-process pattern).
 //
 // Design reference: Aeron media-driver ring-buffer pattern (captured in
 // external-review/low-latency-reference/aeron; DESIGN ONLY, not copied).
@@ -64,7 +64,7 @@ class SpscRing {
 
     bool empty() const { return size() == 0; }
 
-    // FASE 2 (latency elite): runtime corroboration of the cache-line
+    // PHASE 2 (latency elite): runtime corroboration of the cache-line
     // separation guarantee. Returns the byte distance between the producer's
     // tail_ and the consumer's head_ in THIS instance; asserted >= 64 by
     // net/tests/test_spsc.cpp on every platform.
@@ -80,7 +80,7 @@ class SpscRing {
     alignas(64) std::atomic<size_t> head_;
     alignas(64) std::atomic<size_t> tail_;
 
-    // FASE 2 (latency elite): compile-time guarantee that the producer's
+    // PHASE 2 (latency elite): compile-time guarantee that the producer's
     // tail_ and the consumer's head_ never share a cache line. If they did,
     // every update would invalidate the other side's line and serialize the
     // two threads (false sharing — LMAX Disruptor cache-line padding

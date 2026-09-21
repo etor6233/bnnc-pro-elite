@@ -1,4 +1,4 @@
-"""FASE 5 measured benchmark: current JSON path (comparison baseline).
+"""PHASE 5 measured benchmark: current JSON path (comparison baseline).
 
 Parses a depth@100ms diff JSON message with the stdlib json parser (the same
 payload shape the current capture lane consumes; field names per the pinned
@@ -9,7 +9,7 @@ b=bids [price,qty], a=asks [price,qty]).
 Numbers are MEASURED only; anti-cheat: a fresh parse + a mandatory field
 extraction on every iteration (no memoization, no pre-parsed objects).
 
-FASE 1 addition: the same samples also feed an HDR histogram (via
+PHASE 1 addition: the same samples also feed an HDR histogram (via
 tools/hdr_reference.py, the independent Python port of the HdrHistogram_c
 semantics, commit 1343a18908c6) so the JSON lane reports p50/p99/p99.9/p99.99
 with 3 significant figures — comparable with the C++ benches.
@@ -91,7 +91,7 @@ def main() -> int:
         fh.write("\n")
     print(f"wrote {out}")
 
-    # FASE 1 HDR report: p50/p99/p99.9/p99.99 over the same samples.
+    # PHASE 1 HDR report: p50/p99/p99.9/p99.99 over the same samples.
     hist = hdr_reference.HdrHistogram(1, 3_600_000_000_000, 3)
     for s in all_samples:
         hist.record(int(s))

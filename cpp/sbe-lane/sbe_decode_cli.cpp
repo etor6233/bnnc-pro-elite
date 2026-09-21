@@ -2,7 +2,7 @@
 //
 // Reads a frames file (u32 little-endian length prefix + SBE payload, the
 // framing written by sbe_lane.py) and decodes every frame with the pinned
-// FASE 2 decoder (sbe/binance_sbe). Emits one JSON line per frame; exits
+// PHASE 2 decoder (sbe/binance_sbe). Emits one JSON line per frame; exits
 // non-zero on any malformed frame. Used by the lane verification step and the
 // test suite — spec schema pinned in cpp/sbe/schema/stream_1_0.xml.
 #include <cstdint>
