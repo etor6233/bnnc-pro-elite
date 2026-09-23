@@ -816,7 +816,10 @@ public static class RawQualificationNative
     public static void TerminateProcessHandle(IntPtr process, UInt32 exitCode)
     {
         if (!TerminateProcess(process, exitCode))
-            throw new Win32Exception(Marshal.GetLastWin32Error(), "TerminateProcess failed");
+        {
+            Int32 error = Marshal.GetLastWin32Error();
+            throw new Win32Exception(error, "TerminateProcess failed: " + error.ToString());
+        }
     }
 
     public static bool WaitForProcessExit(IntPtr process, UInt32 milliseconds)

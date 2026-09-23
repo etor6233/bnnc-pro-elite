@@ -91,6 +91,7 @@ class _AuditState:
         self.last_depth_sequence: int | None = None
         self.exact_next_depth: int | None = None
         self.published: dict[int, str] = {}
+        self.corrected: dict[int, str] = {}
         self.started_seen = False
         self.terminal_seen = False
         self.trade_floor: int | None = None
@@ -177,10 +178,11 @@ def _apply_record(
         floor = payload.get("trade_floor")
         if type(floor) is not int:
             raise ArbitrationVerificationError("ARBITRATION_RESUMED lacks its trade_floor")
-        if floor != (state.last_trade_id or 0):
+        expected_floor = max(state.last_trade_id or 0, state.trade_floor or 0)
+        if floor != expected_floor:
             raise ArbitrationVerificationError(
                 f"ARBITRATION_RESUMED trade floor {floor} does not equal the previous "
-                f"segment's last published trade {state.last_trade_id or 0}"
+                f"segment's effective trade floor {expected_floor}"
             )
         if not isinstance(payload.get("mode"), str):
             raise ArbitrationVerificationError("ARBITRATION_RESUMED lacks its mode")
@@ -258,7 +260,7 @@ def _apply_record(
             )
         kind = payload.get("kind")
         if kind == "duplicate":
-            published_digest = state.published.get(trade_id)
+            published_digest = state.published.get(trade_id, state.corrected.get(trade_id))
             if published_digest is None:
                 raise ArbitrationVerificationError(
                     "trade late correction kind=duplicate references an unpublished identity"
@@ -268,10 +270,13 @@ def _apply_record(
                     "trade late correction kind=duplicate contradicts the published identity"
                 )
         elif kind == "unknown":
-            if trade_id in state.published:
+            if not state.preset_context and trade_id <= (state.trade_floor or 0):
+                raise ArbitrationVerificationError("unknown correction is at or below the startup trade floor")
+            if trade_id in state.published or trade_id in state.corrected:
                 raise ArbitrationVerificationError(
                     "trade late correction kind=unknown contradicts the published identity"
                 )
+            state.corrected[trade_id] = observation_sha
         else:
             # Schema compatibility policy (ADR-17 B5): corrections without a
             # known classification are REJECTED, never silently reinterpreted.
@@ -389,6 +394,7 @@ def _audit_file(path: Path, state: _AuditState, incremental: bool, preserve_cont
     if file_index == 0:
         raise ArbitrationVerificationError("journal is empty")
     state.segments += 1
+    state.last_segment_tail = tail_bytes
     return clean_eof, tail_bytes
 
 
@@ -422,7 +428,7 @@ def audit_journal(path: Path, incremental: bool = False) -> dict[str, object]:
     """Strict audit of one journal segment (ADR-16/ADR-17 rules)."""
     state = _AuditState()
     clean_eof, tail_bytes = _audit_file(path, state, incremental)
-    if not clean_eof:
+    if not clean_eof and not incremental:
         raise ArbitrationVerificationError(
             f"journal ends with a partial tail ({tail_bytes} bytes)"
         )
@@ -431,16 +437,22 @@ def audit_journal(path: Path, incremental: bool = False) -> dict[str, object]:
     return report
 
 
-def audit_journal_set(paths: list[Path]) -> dict[str, object]:
-    """Closed audit of a resume-chained journal SET (ADR-17 continuous)."""
+def audit_journal_set(paths: list[Path], incremental: bool = False) -> dict[str, object]:
+    """Carry actual prior identities; a successor must declare torn predecessor bytes."""
+    if not paths:
+        raise ArbitrationVerificationError("arbitration journal set is empty")
     state = _AuditState()
-    for path in paths:
-        clean_eof, tail_bytes = _audit_file(path, state, False)
-        if not clean_eof:
+    tail_bytes = 0
+    for index, path in enumerate(paths):
+        tolerate_tail = incremental or index < len(paths) - 1
+        clean_eof, tail_bytes = _audit_file(path, state, tolerate_tail)
+        if not clean_eof and not tolerate_tail:
             raise ArbitrationVerificationError(
                 f"journal segment {path} ends with a partial tail ({tail_bytes} bytes)"
             )
-    return _finish(state, False)
+    report = _finish(state, incremental)
+    report["tail_bytes"] = tail_bytes
+    return report
 
 
 def _first_payload(path: Path) -> dict[str, object]:
@@ -602,6 +614,10 @@ def oracle_depth_observations(
             raise ArbitrationVerificationError("depth payload lacks exact U/u")
         outcome = book.apply_depth(record.frame.payload)
         if outcome is ApplyOutcome.OLD:
+            if observations:
+                raise ArbitrationVerificationError(
+                    "stale depth record appeared after canonical LIVE observations"
+                )
             continue
         observations.append((first, final, book.state_digest()))
     return observations
@@ -675,6 +691,94 @@ def _scoped_artifact_roots(artifact: Path, declared: list[str]) -> list[Path]:
     return [root for root in roots if root.name in declared]
 
 
+def _file_sha256(path: Path) -> str:
+    with path.open("rb") as handle:
+        return hashlib.file_digest(handle, "sha256").hexdigest()
+
+
+def _check_inventory_journals(cut: dict) -> None:
+    for path, expected in cut["journal_hashes"]:
+        if _file_sha256(path) != expected:
+            raise ArbitrationVerificationError("inventory journal hash mismatch")
+
+
+def _select_journal_prefix(path: Path, journals: list[Path]) -> list[Path]:
+    """Only an externally frozen contiguous prefix may supply prior context."""
+    if path.stat().st_size > 16 * MAX_RECORD_BYTES:
+        raise ArbitrationVerificationError("artifact inventory exceeds its bound")
+    try:
+        value = json.loads(path.read_bytes().decode("utf-8-sig"))
+    except (UnicodeError, ValueError) as error:
+        raise ArbitrationVerificationError("invalid artifact inventory JSON") from error
+    entries = value.get("journals") if isinstance(value, dict) else None
+    if not isinstance(entries, list) or not entries or len(entries) > len(journals):
+        raise ArbitrationVerificationError("journal cut is not a contiguous prefix")
+    for entry, actual in zip(entries, journals):
+        name = entry.get("path") if isinstance(entry, dict) else None
+        if not isinstance(name, str) or not name:
+            raise ArbitrationVerificationError("invalid prefix journal path")
+        candidate = Path(name)
+        resolved = (candidate if candidate.is_absolute() else path.parent / candidate).resolve(strict=True)
+        if resolved != actual.resolve(strict=True):
+            raise ArbitrationVerificationError("journal cut is not a contiguous prefix")
+    return journals[:len(entries)]
+
+
+def _load_expected_inventory(
+    path: Path, artifact: Path, journals: list[Path], declared: list[str]
+) -> dict:
+    """An independently produced, immutable journal cut, not output-selected raw.
+
+    A historical cut may intentionally exclude future artifacts. The producer
+    must derive eligibility from the supervisor ledger, never the journal.
+    Paths are absolute or relative to the inventory's own directory.
+    """
+    if path.stat().st_size > 16 * MAX_RECORD_BYTES:
+        raise ArbitrationVerificationError("artifact inventory exceeds its bound")
+    encoded = path.read_bytes()
+    try:
+        value = json.loads(encoded.decode("utf-8-sig"))
+    except (UnicodeError, ValueError) as error:
+        raise ArbitrationVerificationError("invalid artifact inventory JSON") from error
+    if not isinstance(value, dict) or value.get("schema") != "LiveArbitrationExpectedArtifactsV1":
+        raise ArbitrationVerificationError("unsupported artifact inventory schema")
+
+    def resolve(item: object) -> Path:
+        if not isinstance(item, str) or not item:
+            raise ArbitrationVerificationError("inventory path must be a nonempty string")
+        candidate = Path(item)
+        return (candidate if candidate.is_absolute() else path.parent / candidate).resolve(strict=True)
+
+    artifacts = value.get("artifacts")
+    if not isinstance(artifacts, list) or not artifacts:
+        raise ArbitrationVerificationError("artifact inventory requires nonempty artifacts")
+    expected = [resolve(item) for item in artifacts]
+    expected_names = [item.name for item in expected]
+    if len(set(expected)) != len(expected) or len(set(expected_names)) != len(expected):
+        raise ArbitrationVerificationError("artifact inventory contains duplicate identities")
+    discovered = _artifact_roots(artifact)
+    selected = [item.resolve(strict=True) for item in discovered if item.name in expected_names]
+    if len(selected) != len(expected) or set(selected) != set(expected):
+        raise ArbitrationVerificationError("artifact inventory paths are missing or ambiguous in oracle root")
+    journal_entries = value.get("journals")
+    if not isinstance(journal_entries, list) or not journal_entries:
+        raise ArbitrationVerificationError("artifact inventory requires journal cuts")
+    hashes = []
+    for entry in journal_entries:
+        if not isinstance(entry, dict) or not _is_hex64(entry.get("sha256")):
+            raise ArbitrationVerificationError("invalid inventory journal digest")
+        hashes.append((resolve(entry.get("path")), entry["sha256"].lower()))
+    cut_paths = [item[0] for item in hashes]
+    if len(set(cut_paths)) != len(cut_paths) or set(cut_paths) != {item.resolve(strict=True) for item in journals}:
+        raise ArbitrationVerificationError("inventory journal set differs from audited journals")
+    cut = {"artifacts": expected_names, "journal_hashes": hashes,
+           "sha256": hashlib.sha256(encoded).hexdigest()}
+    _check_inventory_journals(cut)
+    if set(declared) != set(expected_names):
+        raise ArbitrationVerificationError("artifact inventory differs from journal declarations")
+    return cut
+
+
 def _unsealed_depth_lanes(artifact: Path, declared: list[str]) -> set[str]:
     """Lanes whose depth evidence still includes an unsealed generation: a
     live-prefix audit cannot verify frames freshly published from that
@@ -695,10 +799,91 @@ def _unsealed_depth_lanes(artifact: Path, declared: list[str]) -> set[str]:
     return lanes
 
 
+def _sealed_stream_key(generation: Path, stream: str) -> str | None:
+    """Content key of a sealed stream. Unsealed generations are never cached."""
+    if not _stream_fully_sealed(generation, stream):
+        return None
+    digest = hashlib.sha256()
+    digest.update(b"sealed-oracle-v1\0")
+    digest.update(stream.encode("utf-8"))
+    stream_dir = generation / stream
+    for path in sorted(entry for entry in stream_dir.iterdir() if entry.is_file()):
+        name = path.name.encode("utf-8")
+        digest.update(len(name).to_bytes(4, "big"))
+        digest.update(name)
+        digest.update(b"\0")
+        with path.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(chunk)
+    if stream == "depth":
+        snapshot = generation / "snapshot.bnraw"
+        if snapshot.is_file():
+            digest.update(b"snapshot.bnraw")
+            with snapshot.open("rb") as handle:
+                for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                    digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _read_oracle_cache(cache_dir: Path, kind: str, key: str) -> object | None:
+    """Returns the cached rows only when the file names its own content key."""
+    path = cache_dir / kind / f"{key}.json"
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(value, dict) or value.get("key") != key:
+        return None
+    return value.get("rows")
+
+
+def _write_oracle_cache(cache_dir: Path, kind: str, key: str, value: object) -> None:
+    directory = cache_dir / kind
+    directory.mkdir(parents=True, exist_ok=True)
+    target = directory / f"{key}.json"
+    temporary = directory / f"{key}.json.tmp"
+    temporary.write_text(json.dumps({"key": key, "rows": value}), encoding="utf-8")
+    temporary.replace(target)
+
+
+def _trade_cache_rows(value: object) -> list[dict[str, object]] | None:
+    if not isinstance(value, list):
+        return None
+    rows: list[dict[str, object]] = []
+    for item in value:
+        if not isinstance(item, dict):
+            return None
+        trade_id = item.get("trade_id")
+        record_sha = item.get("record_sha256")
+        observation_sha = item.get("observation_sha256")
+        if type(trade_id) is not int or not isinstance(record_sha, str) or not isinstance(observation_sha, str):
+            return None
+        rows.append(item)
+    return rows
+
+
+def _depth_cache_rows(value: object) -> list[tuple[int, int, str]] | None:
+    if not isinstance(value, list):
+        return None
+    rows: list[tuple[int, int, str]] = []
+    for item in value:
+        if (
+            not isinstance(item, list)
+            or len(item) != 3
+            or type(item[0]) is not int
+            or type(item[1]) is not int
+            or not isinstance(item[2], str)
+        ):
+            return None
+        rows.append((item[0], item[1], item[2]))
+    return rows
+
+
 def oracle_trades_union(
     artifact: Path,
     tolerate_missing_ack: bool = False,
     declared_artifacts: list[str] | None = None,
+    cache_dir: Path | None = None,
 ) -> dict[int, list[dict[str, str]]]:
     """The capture system's complete trade evidence (ADR-17 B5): every
     durable trade of every campaign and generation of BOTH lanes keyed by
@@ -712,12 +897,26 @@ def oracle_trades_union(
                 continue
             for campaign in _sorted_directories(lane_root):
                 for generation in _sorted_directories(campaign / "generations"):
-                    for record in _stream_records(generation, "trade", tolerate_missing_ack):
-                        trade_id, record_sha, observation_sha = _materialize_one_trade(record)
-                        by_id.setdefault(trade_id, []).append(
+                    key = _sealed_stream_key(generation, "trade") if cache_dir is not None else None
+                    cached = _trade_cache_rows(_read_oracle_cache(cache_dir, "trade", key)) if key is not None and cache_dir is not None else None
+                    if cached is None:
+                        cached = []
+                        for record in _stream_records(generation, "trade", tolerate_missing_ack):
+                            trade_id, record_sha, observation_sha = _materialize_one_trade(record)
+                            cached.append(
+                                {
+                                    "trade_id": trade_id,
+                                    "record_sha256": record_sha,
+                                    "observation_sha256": observation_sha,
+                                }
+                            )
+                        if key is not None and cache_dir is not None:
+                            _write_oracle_cache(cache_dir, "trade", key, cached)
+                    for row in cached:
+                        by_id.setdefault(int(row["trade_id"]), []).append(
                             {
-                                "record_sha256": record_sha,
-                                "observation_sha256": observation_sha,
+                                "record_sha256": str(row["record_sha256"]),
+                                "observation_sha256": str(row["observation_sha256"]),
                             }
                         )
     return by_id
@@ -772,6 +971,7 @@ def oracle_depth_by_lane(
     tolerate_missing_ack: bool = False,
     declared_artifacts: list[str] | None = None,
     unsealed_lanes: set[str] | None = None,
+    cache_dir: Path | None = None,
 ) -> dict[str, dict[int, list[tuple[int, str]]]]:
     """The depth oracle (ADR-17 B5): trusted contiguous observations of BOTH
     lanes keyed by lane and final update ID, so a window served exclusively
@@ -803,22 +1003,43 @@ def oracle_depth_by_lane(
                         if tolerate_missing_ack:
                             continue
                     tasks.append((lane, generation))
-    # Closed-set audits (the heavy G2 path) compute the per-generation
-    # trusted observations in a spawn pool: each generation is an independent
-    # book state (own snapshot), so digests are byte-identical regardless of
-    # schedule.  Live-prefix audits keep the serial path (tolerant mode may
-    # read files that are still being written).
+    # Each generation owns its snapshot, so digests do not depend on order.
+    # A prefix audit only enqueues generations this parent already classified
+    # as sealed; the in-flight files tolerant mode may still be writing are
+    # not in `tasks`. Those sealed generations use the same spawn pool as a
+    # closed audit. One generation stays in-process.
     pool_size = min(os.cpu_count() or 2, 12)
-    use_pool = not tolerate_missing_ack and len(tasks) > 1 and pool_size > 1
+    cached_hits: list[tuple[str, list[tuple[int, int, str]]]] = []
+    misses: list[tuple[str, Path, str | None]] = []
+    for lane, generation in tasks:
+        key = _sealed_stream_key(generation, "depth") if cache_dir is not None else None
+        cached = _depth_cache_rows(_read_oracle_cache(cache_dir, "depth", key)) if key is not None and cache_dir is not None else None
+        if cached is not None:
+            cached_hits.append((lane, cached))
+        else:
+            misses.append((lane, generation, key))
+    use_pool = len(misses) > 1 and pool_size > 1
     if use_pool:
         with multiprocessing.get_context("spawn").Pool(pool_size) as pool:
-            computed = pool.map(_trusted_depth_worker, [str(g) for _, g in tasks])
+            computed = pool.map(_trusted_depth_worker, [str(g) for _, g, _ in misses])
     else:
         computed = [
-            _trusted_depth_observations(g, tolerate_missing_ack) for _, g in tasks
+            _trusted_depth_observations(g, tolerate_missing_ack) for _, g, _ in misses
         ]
+    for (_lane, _generation, key), observations in zip(misses, computed):
+        if key is not None and cache_dir is not None and observations is not None:
+            _write_oracle_cache(
+                cache_dir,
+                "depth",
+                key,
+                [[first, final, digest] for first, final, digest in observations],
+            )
     by_lane: dict[str, dict[int, list[tuple[int, str]]]] = {}
-    for (lane, _generation), observations in zip(tasks, computed):
+    for lane, observations in cached_hits:
+        lane_map = by_lane.setdefault(lane, {})
+        for first, final, digest in observations:
+            lane_map.setdefault(final, []).append((first, digest))
+    for (lane, _generation, _key), observations in zip(misses, computed):
         lane_map = by_lane.setdefault(lane, {})
         for first, final, digest in observations:
             lane_map.setdefault(final, []).append((first, digest))
@@ -834,7 +1055,9 @@ class _Canonical:
         self.corrections: list[dict[str, object]] = []
         self.depth_rebootstraps: list[tuple[int, int, str]] = []
         self.terminal_serving_lane: str | None = None
+        self.terminal_completion_scope: str | None = None
         self.trade_floor: int | None = None
+        self.has_startup_context = False
         # Artifact identities declared by the segment chain: the raw oracle
         # is restricted to exactly these artifacts (a service stopped before
         # a pending epoch transition verifies the window it covered).
@@ -845,18 +1068,29 @@ class _Canonical:
         self.last_depth_event: str | None = None
 
 
-def _canonical_observations(journals: list[Path]) -> _Canonical:
+def _canonical_observations(journals: list[Path], tolerate_partial_tail: bool = False) -> _Canonical:
     canonical = _Canonical()
-    for journal in journals:
+    for journal_index, journal in enumerate(journals):
         with journal.open("rb") as handle:
             while True:
-                line = _read_line(handle)
-                if line is None:
+                line = handle.readline(MAX_RECORD_BYTES + 1)
+                if not line:
                     break
+                if len(line) > MAX_RECORD_BYTES:
+                    raise ArbitrationVerificationError("journal record exceeds its bound")
+                if not line.endswith(b"\n"):
+                    if tolerate_partial_tail or journal_index < len(journals) - 1:
+                        break
+                    raise ArbitrationVerificationError("journal contains a partial record")
+                if not line.strip():
+                    continue
                 envelope = json.loads(line.decode("utf-8"))
                 payload = envelope["body"]["payload"]
                 event = payload.get("event")
                 if event in ("ARBITRATION_STARTED", "ARBITRATION_RESUMED"):
+                    canonical.terminal_completion_scope = None
+                    if event == "ARBITRATION_STARTED":
+                        canonical.has_startup_context = True
                     # The canonical window starts at the FIRST segment's
                     # floor; later segments declare their own resumed floors.
                     if canonical.trade_floor is None:
@@ -916,6 +1150,10 @@ def _canonical_observations(journals: list[Path]) -> _Canonical:
                     canonical.last_depth_event = "gap"
                 elif event == "ARBITRATION_TERMINAL":
                     canonical.terminal_serving_lane = payload.get("serving_lane_at_terminal")
+                    scope = payload.get("completion_scope")
+                    if scope is not None and scope not in ("HANDOFF", "SEALED_DRAIN"):
+                        raise ArbitrationVerificationError("unknown terminal completion_scope")
+                    canonical.terminal_completion_scope = scope
     return canonical
 
 
@@ -938,89 +1176,63 @@ def _verify_trades(
     canonical: _Canonical,
     raw_union: dict[int, list[dict[str, str]]],
     bound_to_last: bool,
-) -> None:
-    if not canonical.trades and bound_to_last:
-        # Live prefix / bounded tail: nothing published yet in this window,
-        # so there is nothing to verify against the raw union yet (the
-        # closed full-set audit enforces at the terminal).
-        return
+) -> int:
+    """Reconstruct OBSERVATION + first UNKNOWN; raw equality remains exact.
+
+    Corrections never rewrite the ordered publication stream. A standalone
+    resumed tail proves only its local interval; prior identities need context.
+    """
     floor = canonical.trade_floor or 0
-    upper_bound = None
-    if bound_to_last and canonical.trades:
-        upper_bound = int(canonical.trades[-1]["trade_id"])
-    expected = sorted(
-        trade_id
-        for trade_id in raw_union
-        if trade_id > floor and (upper_bound is None or trade_id <= upper_bound)
-    )
-    actual = [int(trade["trade_id"]) for trade in canonical.trades]
-    if len(set(actual)) != len(actual):
-        raise ArbitrationVerificationError("canonical journal publishes a duplicate trade ID")
+    upper_bound = (int(canonical.trades[-1]["trade_id"]) if canonical.trades else floor) if bound_to_last else None
+    reconstructed: dict[int, str] = {}
+
+    def identity(item: dict[str, object], label: str) -> tuple[int, str]:
+        trade_id = int(item["trade_id"])
+        evidence = raw_union.get(trade_id)
+        if not evidence:
+            raise ArbitrationVerificationError(f"{label} {trade_id} has no raw evidence")
+        digests = {entry["observation_sha256"] for entry in evidence}
+        if len(digests) != 1:
+            raise ArbitrationVerificationError(f"raw trade {trade_id} has conflicting identities")
+        digest = str(item["observation_sha256"])
+        if digest not in digests:
+            raise ArbitrationVerificationError(f"{label} {trade_id} carries an observation digest absent from the raw capture")
+        if not any(entry["record_sha256"] == item["record_sha256"]
+                   and entry["observation_sha256"] == digest for entry in evidence):
+            raise ArbitrationVerificationError(f"{label} {trade_id} carries a raw lineage record absent from the raw capture")
+        return trade_id, digest
+
+    for trade in canonical.trades:
+        trade_id, digest = identity(trade, "canonical trade")
+        if trade_id in reconstructed:
+            raise ArbitrationVerificationError("canonical journal publishes a duplicate trade ID")
+        reconstructed[trade_id] = digest
+    for correction in canonical.corrections:
+        trade_id, digest = identity(correction, "trade correction")
+        kind = correction["kind"]
+        if kind == "duplicate":
+            if reconstructed.get(trade_id) != digest:
+                raise ArbitrationVerificationError(f"trade correction {trade_id} kind=duplicate contradicts the published identity")
+        elif kind == "unknown":
+            if canonical.has_startup_context and trade_id <= floor:
+                raise ArbitrationVerificationError("unknown correction is at or below the startup trade floor")
+            if trade_id in reconstructed:
+                raise ArbitrationVerificationError(f"trade correction {trade_id} kind=unknown contradicts the published identity")
+            reconstructed[trade_id] = digest
+        else:
+            raise ArbitrationVerificationError(f"trade correction {trade_id} carries an unknown classification")
+    expected = sorted(trade_id for trade_id in raw_union
+                      if trade_id > floor and (upper_bound is None or trade_id <= upper_bound))
+    actual = sorted(trade_id for trade_id in reconstructed if trade_id > floor)
     if actual != expected:
-        published = set(actual)
-        missing = [trade_id for trade_id in expected if trade_id not in published][:8]
+        missing = [trade_id for trade_id in expected if trade_id not in reconstructed][:8]
         invented = [trade_id for trade_id in actual if trade_id not in raw_union][:8]
         raise ArbitrationVerificationError(
             "canonical trade stream differs from the raw union: "
-            f"canonical {len(actual)}, union window {len(expected)}, "
+            f"reconstructed {len(actual)}, union window {len(expected)}, "
             f"missing examples {missing}, invented examples {invented}"
         )
-    published_digests: dict[int, str] = {}
-    for trade in canonical.trades:
-        trade_id = int(trade["trade_id"])
-        evidence = raw_union.get(trade_id)
-        if not evidence:
-            raise ArbitrationVerificationError(
-                f"canonical trade {trade_id} has no raw evidence"
-            )
-        if not any(item["observation_sha256"] == trade["observation_sha256"] for item in evidence):
-            raise ArbitrationVerificationError(
-                f"canonical trade {trade_id} carries an observation digest absent "
-                "from the raw capture (rehashed content)"
-            )
-        if not any(item["record_sha256"] == trade["record_sha256"] for item in evidence):
-            raise ArbitrationVerificationError(
-                f"canonical trade {trade_id} carries a raw lineage record absent "
-                "from the raw capture"
-            )
-        published_digests[trade_id] = str(trade["observation_sha256"])
-    for correction in canonical.corrections:
-        trade_id = int(correction["trade_id"])
-        evidence = raw_union.get(trade_id)
-        if not evidence:
-            raise ArbitrationVerificationError(
-                f"trade correction {trade_id} references an ID absent from the raw capture"
-            )
-        if not any(
-            item["observation_sha256"] == correction["observation_sha256"] for item in evidence
-        ):
-            raise ArbitrationVerificationError(
-                f"trade correction {trade_id} carries an observation digest absent "
-                "from the raw capture"
-            )
-        if not any(item["record_sha256"] == correction["record_sha256"] for item in evidence):
-            raise ArbitrationVerificationError(
-                f"trade correction {trade_id} carries a raw lineage record absent "
-                "from the raw capture"
-            )
-        kind = correction["kind"]
-        published_digest = published_digests.get(trade_id)
-        if kind == "duplicate":
-            if published_digest != correction["observation_sha256"]:
-                raise ArbitrationVerificationError(
-                    f"trade correction {trade_id} kind=duplicate contradicts "
-                    "the published identity"
-                )
-        elif kind == "unknown":
-            if trade_id in published_digests:
-                raise ArbitrationVerificationError(
-                    f"trade correction {trade_id} kind=unknown contradicts "
-                    "the published identity"
-                )
-        else:
-            raise ArbitrationVerificationError(
-                f"trade correction {trade_id} carries an unknown classification"
-            )
+    return len(reconstructed)
 
 
 def _verify_depth(
@@ -1113,8 +1325,8 @@ def _verify_depth(
                 )
             next_update = int(last["final_sequence"]) + 1
             if any(
-                first == next_update
-                for variants in lane_oracle.values()
+                first <= next_update <= final_sequence
+                for final_sequence, variants in lane_oracle.items()
                 for first, _digest in variants
             ):
                 raise ArbitrationVerificationError(
@@ -1138,26 +1350,32 @@ def _verify_with_oracle(
     tolerant_lanes: bool,
     bound_to_last: bool,
     enforce_final_boundary: bool,
-) -> None:
-    canonical = _canonical_observations(journals)
+    expected_artifacts: list[str] | None = None,
+    cache_dir: Path | None = None,
+) -> dict:
+    canonical = _canonical_observations(journals, tolerate_partial_tail=bound_to_last)
+    trade_identity = "SKIPPED_EMPTY_PREFIX" if bound_to_last and not canonical.trades else "PASS"
+    declared = canonical.declared_artifacts if expected_artifacts is None else expected_artifacts
     if oracle_artifact is not None:
         # ADR-17 B5 (defect hrs-14572a22e336): compute the unsealed-lane
         # classification FIRST and share it with the oracle build, so the
         # exclusion and the tolerance always come from the SAME snapshot of
         # the generation terminal state (the earlier two-read interleaving
         # rejected frames the oracle had legitimately excluded).
-        unsealed = _unsealed_depth_lanes(oracle_artifact, canonical.declared_artifacts)
+        unsealed = _unsealed_depth_lanes(oracle_artifact, declared)
         raw_union = oracle_trades_union(
-            oracle_artifact, tolerant_lanes, canonical.declared_artifacts
+            oracle_artifact, tolerant_lanes, declared, cache_dir
         )
         raw_depth = oracle_depth_by_lane(
-            oracle_artifact, tolerant_lanes, canonical.declared_artifacts, unsealed
+            oracle_artifact, tolerant_lanes, declared, unsealed, cache_dir
         )
-        _verify_trades(canonical, raw_union, bound_to_last)
+        reconstructed_trades = _verify_trades(canonical, raw_union, bound_to_last)
         _verify_depth(
             canonical, raw_depth, tolerant_lanes, enforce_final_boundary, unsealed
         )
-        return
+        return {"trade_identity": trade_identity, "depth_scope_complete": not unsealed,
+                "terminal_completion_scope": canonical.terminal_completion_scope,
+                "reconstructed_trades": reconstructed_trades}
     if oracle_generation is not None:
         raw_union: dict[int, list[dict[str, str]]] = {}
         for record in _stream_records(oracle_generation, "trade", tolerant_lanes):
@@ -1165,7 +1383,7 @@ def _verify_with_oracle(
             raw_union.setdefault(trade_id, []).append(
                 {"record_sha256": record_sha, "observation_sha256": observation_sha}
             )
-        _verify_trades(canonical, raw_union, bound_to_last)
+        reconstructed_trades = _verify_trades(canonical, raw_union, bound_to_last)
         generation_text = str(oracle_generation).replace("\\", "/")
         if "/p/" in generation_text:
             lane = "p"
@@ -1182,7 +1400,10 @@ def _verify_with_oracle(
             ):
                 lane_map.setdefault(final, []).append((first, digest))
         _verify_depth(canonical, {lane: lane_map}, tolerant_lanes, enforce_final_boundary)
-        return
+        return {"trade_identity": trade_identity,
+                "depth_scope_complete": _stream_fully_sealed(oracle_generation, "depth"),
+                "terminal_completion_scope": canonical.terminal_completion_scope,
+                "reconstructed_trades": reconstructed_trades}
     raise ArbitrationVerificationError("an oracle mode must be selected for identity verification")
 
 
@@ -1203,7 +1424,11 @@ def main() -> int:
                         help="untouched lane generation directory (trades + depth oracle)")
     parser.add_argument("--oracle-artifact", type=Path, default=None,
                         help="supervisor artifact root or service symbol root (trades = "
-                             "union of both lanes, depth = trusted prefixes of both lanes)")
+                              "union of both lanes, depth = trusted prefixes of both lanes)")
+    parser.add_argument("--expected-artifact-inventory", type=Path, default=None,
+                        help="independent supervisor inventory bound to exact journal hashes")
+    parser.add_argument("--journal-prefix", action="store_true",
+                        help="audit the complete chain through a sealed inventory cut; never exhaustive")
     parser.add_argument("--incremental", action="store_true",
                         help="live prefix audit: the terminal record is not required and a "
                              "partial final line is reported instead of rejected; the oracle "
@@ -1212,16 +1437,19 @@ def main() -> int:
                         help="bounded per-epoch verification: audit ONE sealed resume segment "
                              "against the chain context declared in its own ARBITRATION_RESUMED "
                              "record (requires --oracle-artifact)")
+    parser.add_argument("--oracle-cache", type=Path, default=None,
+                        help="reuse sealed generation evidence when the raw bytes are unchanged")
     parser.add_argument("--output", type=Path, default=None)
     args = parser.parse_args()
     tail_interrupted = False
     try:
         if args.oracle_generation is not None and args.oracle_artifact is not None:
             raise ArbitrationVerificationError("choose exactly one oracle mode")
-        if args.incremental and args.journal_root is not None:
-            raise ArbitrationVerificationError(
-                "incremental prefix audits verify one active segment"
-            )
+        if args.expected_artifact_inventory is not None and args.oracle_artifact is None:
+            raise ArbitrationVerificationError("expected artifact inventory requires --oracle-artifact")
+        if args.journal_prefix and (args.journal_root is None or args.expected_artifact_inventory is None
+                                    or args.incremental or args.tail_segment_only):
+            raise ArbitrationVerificationError("--journal-prefix requires --journal-root and --expected-artifact-inventory without another prefix mode")
         if args.tail_segment_only and (
             args.incremental or args.journal_root is not None or args.oracle_artifact is None
         ):
@@ -1242,7 +1470,13 @@ def main() -> int:
                 )
         else:
             journals = [args.journal]
-        if args.incremental:
+        if args.journal_prefix:
+            journals = _select_journal_prefix(args.expected_artifact_inventory, journals)
+        if args.incremental and args.journal_root is not None:
+            audit = audit_journal_set(journals, incremental=True)
+            tail_bytes = audit["tail_bytes"]
+            terminal_complete = bool(audit["terminal_seen"]) and tail_bytes == 0
+        elif args.incremental:
             first_payload = _first_payload(journals[0])
             if first_payload.get("event") == "ARBITRATION_RESUMED":
                 previous_sha = first_payload.get("previous_journal_sha256")
@@ -1254,17 +1488,18 @@ def main() -> int:
                 audit, clean_eof, tail_bytes = _audit_tail_incremental(
                     journals[0], str(previous_sha), int(floor)
                 )
-                terminal_complete = clean_eof
+                terminal_complete = bool(audit["terminal_seen"]) and clean_eof
             else:
                 audit = audit_journal(journals[0], incremental=True)
-                terminal_complete = audit.get("tail_bytes", 0) == 0
+                terminal_complete = bool(audit["terminal_seen"]) and audit.get("tail_bytes", 0) == 0
                 tail_bytes = audit["tail_bytes"]
         elif args.tail_segment_only:
             first_payload = _first_payload(journals[0])
             event = first_payload.get("event")
             tail_interrupted = False
             if event == "ARBITRATION_STARTED":
-                audit = audit_journal(journals[0], incremental=False)
+                audit = audit_journal(journals[0], incremental=True)
+                tail_bytes = audit["tail_bytes"]
             elif event == "ARBITRATION_RESUMED":
                 previous_sha = first_payload.get("previous_journal_sha256")
                 floor = first_payload.get("trade_floor")
@@ -1274,25 +1509,15 @@ def main() -> int:
                     )
                 if type(floor) is not int:
                     raise ArbitrationVerificationError("tail segment lacks trade_floor")
-                try:
-                    audit = _audit_tail(journals[0], str(previous_sha), int(floor))
-                except ArbitrationVerificationError as error:
-                    if "lacks a terminal record" not in str(error):
-                        raise
-                    # A segment interrupted by a crash carries no terminal:
-                    # its structure and floor are still auditable as a live
-                    # prefix; the full-set audit at the terminal enforces
-                    # the closed contract.
-                    audit, clean_eof, tail_bytes = _audit_tail_incremental(
-                        journals[0], str(previous_sha), int(floor)
-                    )
-                    tail_interrupted = True
+                audit, clean_eof, tail_bytes = _audit_tail_incremental(
+                    journals[0], str(previous_sha), int(floor)
+                )
             else:
                 raise ArbitrationVerificationError(
                     "tail segment does not open with STARTED or RESUMED"
                 )
-            terminal_complete = True
-            tail_bytes = 0
+            terminal_complete = bool(audit["terminal_seen"]) and tail_bytes == 0
+            tail_interrupted = not terminal_complete
         elif len(journals) == 1:
             audit = audit_journal(journals[0], incremental=False)
             terminal_complete = True
@@ -1301,32 +1526,59 @@ def main() -> int:
             audit = audit_journal_set(journals)
             terminal_complete = True
             tail_bytes = 0
+        inventory_cut = None
+        if args.expected_artifact_inventory is not None:
+            inventory_cut = _load_expected_inventory(
+                args.expected_artifact_inventory, args.oracle_artifact, journals,
+                _canonical_observations(journals, args.incremental or args.tail_segment_only).declared_artifacts,
+            )
         (tolerant_lanes, bound_to_last, enforce_final_boundary) = (
             (True, True, False)
-            if (args.incremental or args.tail_segment_only)
+            if (args.incremental or args.tail_segment_only or args.journal_prefix)
             else (False, False, True)
         )
         oracle_identity = "SKIPPED"
+        oracle_result = {"trade_identity": "SKIPPED", "depth_scope_complete": False,
+                         "terminal_completion_scope": None, "reconstructed_trades": None}
         if args.oracle_artifact is not None or args.oracle_generation is not None:
-            _verify_with_oracle(
+            oracle_result = _verify_with_oracle(
                 journals,
                 args.oracle_artifact,
                 args.oracle_generation,
                 tolerant_lanes,
                 bound_to_last,
                 enforce_final_boundary,
+                inventory_cut["artifacts"] if inventory_cut is not None else None,
+                args.oracle_cache,
             )
-            oracle_identity = "PASS"
+            oracle_identity = "PASS" if oracle_result["trade_identity"] == "PASS" else "SKIPPED"
+        if inventory_cut is not None:
+            _check_inventory_journals(inventory_cut)
+        audit_scope = (
+            "SEALED_JOURNAL_PREFIX" if args.journal_prefix else
+            "LIVE_PREFIX" if args.incremental else
+            "INTERRUPTED_SEGMENT_PREFIX" if tail_interrupted else
+            "SEALED_SEGMENT_PREFIX" if args.tail_segment_only else "CLOSED_JOURNAL_SET"
+        )
         report = {
-            "schema": "LiveArbitrationVerificationV1",
+            "schema": "LiveArbitrationVerificationV2",
             "status": "PASS",
             "journal": str(args.journal) if args.journal is not None else None,
             "journal_root": str(args.journal_root) if args.journal_root is not None else None,
             "audit": audit,
             "incremental": args.incremental,
             "tail_segment_only": args.tail_segment_only,
+            "journal_prefix": args.journal_prefix,
             "tail_interrupted": tail_interrupted,
             "terminal_complete": terminal_complete,
+            "clean_eof": tail_bytes == 0,
+            "audit_scope": audit_scope,
+            "artifact_coverage": "PASS" if inventory_cut is not None else "UNPROVEN",
+            "expected_artifact_inventory_sha256": inventory_cut["sha256"] if inventory_cut else None,
+            "coverage_exhaustive": bool(inventory_cut is not None and terminal_complete
+                                         and not bound_to_last and oracle_identity == "PASS"
+                                         and oracle_result["depth_scope_complete"]
+                                         and oracle_result["terminal_completion_scope"] == "SEALED_DRAIN"),
             "tail_bytes": tail_bytes,
             "oracle_generation": (
                 str(args.oracle_generation) if args.oracle_generation is not None else None
@@ -1335,6 +1587,11 @@ def main() -> int:
                 str(args.oracle_artifact) if args.oracle_artifact is not None else None
             ),
             "oracle_identity": oracle_identity,
+            "oracle_trade_identity": oracle_result["trade_identity"],
+            "canonical_view": "OBSERVATIONS_PLUS_UNKNOWN_LATE_CORRECTIONS",
+            "reconstructed_trades": oracle_result["reconstructed_trades"],
+            "oracle_depth_scope_complete": oracle_result["depth_scope_complete"],
+            "terminal_completion_scope": oracle_result["terminal_completion_scope"],
             "schema_compatibility": {
                 "policy": "reject_unknown_kinds",
                 "detail": "Trade late corrections without kind in {duplicate, unknown} are "
@@ -1342,9 +1599,9 @@ def main() -> int:
                           "journals must be re-verified against raw evidence.",
             },
         }
-    except ArbitrationVerificationError as error:
+    except (ArbitrationVerificationError, OSError) as error:
         report = {
-            "schema": "LiveArbitrationVerificationV1",
+            "schema": "LiveArbitrationVerificationV2",
             "status": "REJECTED",
             "journal": str(args.journal) if args.journal is not None else None,
             "reason": str(error),

@@ -28,7 +28,7 @@
 use lob_replay::durability_progress::scan_durability_progress;
 use lob_replay::live_arbitration::{
     scan_live_arbitration_journal, scan_live_arbitration_journal_incremental,
-    scan_live_arbitration_journal_set, scan_live_arbitration_journal_tail,
+    scan_live_arbitration_journal_set, scan_live_arbitration_journal_set_incremental,
     scan_live_arbitration_journal_tail_incremental,
 };
 use lob_replay::observations::{materialize_depth_record_window, materialize_trade_record};
@@ -40,10 +40,11 @@ use lob_replay::{
     read_raw_records_through_offset, read_raw_segment_records,
 };
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::fs;
-use std::io::BufRead;
+use std::io::{BufRead, Read};
 use std::path::{Path, PathBuf};
 
 fn main() {
@@ -188,6 +189,185 @@ fn scoped_artifact_roots(artifact_root: &Path, declared: &[String]) -> Vec<PathB
         .collect()
 }
 
+struct ExpectedArtifactCut {
+    artifacts: Vec<String>,
+    journal_hashes: Vec<(PathBuf, String)>,
+    sha256: String,
+}
+
+fn file_sha256(path: &Path) -> Result<String> {
+    let mut file = fs::File::open(path).map_err(|e| format!("read {}: {e}", path.display()))?;
+    let mut digest = Sha256::new();
+    let mut buffer = [0_u8; 65536];
+    loop {
+        let count = file
+            .read(&mut buffer)
+            .map_err(|e| format!("hash {}: {e}", path.display()))?;
+        if count == 0 {
+            break;
+        }
+        digest.update(&buffer[..count]);
+    }
+    Ok(format!("{:x}", digest.finalize()))
+}
+
+fn inventory_path(value: &Value, base: &Path) -> Result<PathBuf> {
+    let text = value
+        .as_str()
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| "inventory path must be a nonempty string".to_owned())?;
+    let path = Path::new(text);
+    let path = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        base.join(path)
+    };
+    fs::canonicalize(&path).map_err(|e| format!("resolve inventory path {}: {e}", path.display()))
+}
+
+fn inventory_path_key(path: &Path) -> String {
+    let text = path.to_string_lossy();
+    if cfg!(windows) {
+        text.to_lowercase()
+    } else {
+        text.into_owned()
+    }
+}
+
+fn check_inventory_journals(cut: &ExpectedArtifactCut) -> Result<()> {
+    for (path, expected) in &cut.journal_hashes {
+        if &file_sha256(path)? != expected {
+            return Err("inventory journal hash mismatch".to_owned());
+        }
+    }
+    Ok(())
+}
+
+fn select_journal_prefix(path: &Path, journals: &[PathBuf]) -> Result<Vec<PathBuf>> {
+    if fs::metadata(path)
+        .map_err(|e| format!("inventory metadata: {e}"))?
+        .len()
+        > 16 * 1024 * 1024
+    {
+        return Err("artifact inventory exceeds its bound".to_owned());
+    }
+    let encoded = fs::read(path).map_err(|e| format!("read inventory: {e}"))?;
+    let value: Value = serde_json::from_slice(
+        encoded
+            .strip_prefix(&[0xef, 0xbb, 0xbf])
+            .unwrap_or(&encoded),
+    )
+    .map_err(|e| format!("invalid artifact inventory JSON: {e}"))?;
+    let entries = value["journals"]
+        .as_array()
+        .filter(|entries| !entries.is_empty() && entries.len() <= journals.len())
+        .ok_or_else(|| "journal cut is not a contiguous prefix".to_owned())?;
+    for (entry, actual) in entries.iter().zip(journals) {
+        let selected = inventory_path(&entry["path"], path.parent().unwrap_or(Path::new(".")))?;
+        let actual =
+            fs::canonicalize(actual).map_err(|e| format!("resolve prefix journal: {e}"))?;
+        if inventory_path_key(&selected) != inventory_path_key(&actual) {
+            return Err("journal cut is not a contiguous prefix".to_owned());
+        }
+    }
+    Ok(journals[..entries.len()].to_vec())
+}
+
+/// Independent supervisor eligibility, tied to an exact immutable journal cut.
+/// Later epochs do not enter an earlier cut merely because they now exist.
+fn load_expected_inventory(
+    path: &Path,
+    artifact: &Path,
+    journals: &[PathBuf],
+    declared: &[String],
+) -> Result<ExpectedArtifactCut> {
+    if fs::metadata(path)
+        .map_err(|e| format!("inventory metadata: {e}"))?
+        .len()
+        > 16 * 1024 * 1024
+    {
+        return Err("artifact inventory exceeds its bound".to_owned());
+    }
+    let encoded = fs::read(path).map_err(|e| format!("read inventory: {e}"))?;
+    let body = encoded
+        .strip_prefix(&[0xef, 0xbb, 0xbf])
+        .unwrap_or(&encoded);
+    let value: Value = serde_json::from_slice(body)
+        .map_err(|e| format!("invalid artifact inventory JSON: {e}"))?;
+    if value["schema"].as_str() != Some("LiveArbitrationExpectedArtifactsV1") {
+        return Err("unsupported artifact inventory schema".to_owned());
+    }
+    let base = path.parent().unwrap_or_else(|| Path::new("."));
+    let entries = value["artifacts"]
+        .as_array()
+        .filter(|a| !a.is_empty())
+        .ok_or_else(|| "artifact inventory requires nonempty artifacts".to_owned())?;
+    let mut paths = BTreeSet::new();
+    let mut names = BTreeSet::new();
+    for entry in entries {
+        let resolved = inventory_path(entry, base)?;
+        let name = resolved
+            .file_name()
+            .and_then(|s| s.to_str())
+            .ok_or_else(|| "inventory artifact lacks an identity".to_owned())?
+            .to_owned();
+        if !paths.insert(inventory_path_key(&resolved)) || !names.insert(name) {
+            return Err("artifact inventory contains duplicate identities".to_owned());
+        }
+    }
+    let selected: Vec<PathBuf> = artifact_roots(artifact)
+        .into_iter()
+        .filter(|p| {
+            p.file_name()
+                .and_then(|s| s.to_str())
+                .is_some_and(|s| names.contains(s))
+        })
+        .map(|p| fs::canonicalize(&p).map_err(|e| format!("resolve oracle artifact: {e}")))
+        .collect::<Result<_>>()?;
+    let selected_keys: BTreeSet<String> = selected.iter().map(|p| inventory_path_key(p)).collect();
+    if selected.len() != paths.len() || selected_keys != paths {
+        return Err("artifact inventory paths are missing or ambiguous in oracle root".to_owned());
+    }
+    let entries = value["journals"]
+        .as_array()
+        .filter(|a| !a.is_empty())
+        .ok_or_else(|| "artifact inventory requires journal cuts".to_owned())?;
+    let mut journal_hashes = Vec::new();
+    let mut cut_paths = BTreeSet::new();
+    for entry in entries {
+        let sha = entry["sha256"]
+            .as_str()
+            .filter(|s| s.len() == 64 && s.bytes().all(|b| b.is_ascii_hexdigit()))
+            .ok_or_else(|| "invalid inventory journal digest".to_owned())?;
+        let resolved = inventory_path(&entry["path"], base)?;
+        if !cut_paths.insert(inventory_path_key(&resolved)) {
+            return Err("inventory journal set differs from audited journals".to_owned());
+        }
+        journal_hashes.push((resolved, sha.to_ascii_lowercase()));
+    }
+    let actual: BTreeSet<String> = journals
+        .iter()
+        .map(|p| {
+            fs::canonicalize(p)
+                .map(|p| inventory_path_key(&p))
+                .map_err(|e| format!("resolve journal: {e}"))
+        })
+        .collect::<Result<_>>()?;
+    if cut_paths != actual {
+        return Err("inventory journal set differs from audited journals".to_owned());
+    }
+    let cut = ExpectedArtifactCut {
+        artifacts: names.iter().cloned().collect(),
+        journal_hashes,
+        sha256: format!("{:x}", Sha256::digest(&encoded)),
+    };
+    check_inventory_journals(&cut)?;
+    if declared.iter().cloned().collect::<BTreeSet<_>>() != names {
+        return Err("artifact inventory differs from journal declarations".to_owned());
+    }
+    Ok(cut)
+}
+
 /// Lanes whose depth evidence still includes an unsealed generation: a
 /// live-prefix audit cannot verify frames freshly published from that
 /// evidence yet (the closed segment verification runs after the seal).
@@ -228,10 +408,97 @@ struct RawTradeEvidence {
 /// retaining the exact observation digests per raw record.  Disagreement
 /// between two raw records of the same ID is itself a typed error: the raw
 /// is the authority and the canonical must match it.
+fn hash_file_into(digest: &mut Sha256, path: &Path) -> Result<()> {
+    let mut file = fs::File::open(path).map_err(|error| format!("hash {}: {error}", path.display()))?;
+    let mut buffer = [0_u8; 65536];
+    loop {
+        let count = file
+            .read(&mut buffer)
+            .map_err(|error| format!("hash {}: {error}", path.display()))?;
+        if count == 0 {
+            break;
+        }
+        digest.update(&buffer[..count]);
+    }
+    Ok(())
+}
+
+/// Content key of a sealed stream. An unsealed generation is never cached.
+fn sealed_stream_key(generation: &Path, stream: &str) -> Result<Option<String>> {
+    let stream_dir = generation.join(stream);
+    if !stream_fully_sealed(&stream_dir)? {
+        return Ok(None);
+    }
+    let mut digest = Sha256::new();
+    digest.update(b"sealed-oracle-v1\0");
+    digest.update(stream.as_bytes());
+    let mut files: Vec<PathBuf> = fs::read_dir(&stream_dir)
+        .map_err(|error| format!("read {}: {error}", stream_dir.display()))?
+        .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+        .filter(|path| path.is_file())
+        .collect();
+    files.sort();
+    for path in files {
+        let name = path
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let name_bytes = name.as_bytes();
+        digest.update((name_bytes.len() as u32).to_be_bytes());
+        digest.update(name_bytes);
+        digest.update([0_u8]);
+        hash_file_into(&mut digest, &path)?;
+    }
+    if stream == "depth" {
+        let snapshot = generation.join("snapshot.bnraw");
+        if snapshot.is_file() {
+            digest.update(b"snapshot.bnraw");
+            hash_file_into(&mut digest, &snapshot)?;
+        }
+    }
+    Ok(Some(format!("{:x}", digest.finalize())))
+}
+
+fn read_oracle_cache(cache_dir: &Path, kind: &str, key: &str) -> Option<Value> {
+    let path = cache_dir.join(kind).join(format!("{key}.json"));
+    let bytes = fs::read(path).ok()?;
+    let value: Value = serde_json::from_slice(&bytes).ok()?;
+    if value.get("key").and_then(Value::as_str) != Some(key) {
+        return None;
+    }
+    value.get("rows").cloned()
+}
+
+fn write_oracle_cache(cache_dir: &Path, kind: &str, key: &str, value: &Value) -> Result<()> {
+    let directory = cache_dir.join(kind);
+    fs::create_dir_all(&directory)
+        .map_err(|error| format!("create {}: {error}", directory.display()))?;
+    let target = directory.join(format!("{key}.json"));
+    let temporary = directory.join(format!("{key}.json.tmp"));
+    let encoded = serde_json::json!({"key": key, "rows": value});
+    let bytes = serde_json::to_vec(&encoded)
+        .map_err(|error| format!("encode oracle cache: {error}"))?;
+    fs::write(&temporary, bytes)
+        .map_err(|error| format!("write {}: {error}", temporary.display()))?;
+    if target.is_file() {
+        fs::remove_file(&target)
+            .map_err(|error| format!("replace {}: {error}", target.display()))?;
+    }
+    fs::rename(&temporary, &target).map_err(|error| {
+        format!(
+            "replace {} with {}: {error}",
+            target.display(),
+            temporary.display()
+        )
+    })?;
+    Ok(())
+}
+
 fn oracle_trades_union(
     artifact_root: &Path,
     declared_artifacts: &[String],
     tolerate_missing_ack: bool,
+    cache_dir: Option<&Path>,
 ) -> Result<BTreeMap<u64, Vec<RawTradeEvidence>>> {
     let mut by_id: BTreeMap<u64, Vec<RawTradeEvidence>> = BTreeMap::new();
     for root in scoped_artifact_roots(artifact_root, declared_artifacts) {
@@ -242,16 +509,79 @@ fn oracle_trades_union(
             }
             for campaign in sorted_directories(&lane_root)? {
                 for generation in sorted_directories(&campaign.join("generations"))? {
-                    for record in
-                        collect_stream_records(&generation.join("trade"), tolerate_missing_ack)?
-                    {
-                        let observation = materialize_trade_record(&record)?;
-                        by_id.entry(observation.final_sequence).or_default().push(
-                            RawTradeEvidence {
-                                record_sha256: record.record_sha256.clone(),
-                                observation_sha256: observation.observation_sha256.clone(),
-                            },
-                        );
+                    let key = match cache_dir {
+                        Some(_) => sealed_stream_key(&generation, "trade")?,
+                        None => None,
+                    };
+                    let cached = key.as_ref().and_then(|key| {
+                        cache_dir.and_then(|dir| read_oracle_cache(dir, "trade", key))
+                    });
+                    let rows = if let Some(Value::Array(rows)) = cached {
+                        let mut parsed = Vec::new();
+                        let mut valid = true;
+                        for row in rows {
+                            let Some(trade_id) = row["trade_id"].as_u64() else {
+                                valid = false;
+                                break;
+                            };
+                            let Some(record_sha256) = row["record_sha256"].as_str() else {
+                                valid = false;
+                                break;
+                            };
+                            let Some(observation_sha256) = row["observation_sha256"].as_str() else {
+                                valid = false;
+                                break;
+                            };
+                            parsed.push((
+                                trade_id,
+                                record_sha256.to_owned(),
+                                observation_sha256.to_owned(),
+                            ));
+                        }
+                        if valid {
+                            Some(parsed)
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    };
+                    let rows = if let Some(rows) = rows {
+                        rows
+                    } else {
+                        let mut built = Vec::new();
+                        for record in
+                            collect_stream_records(&generation.join("trade"), tolerate_missing_ack)?
+                        {
+                            let observation = materialize_trade_record(&record)?;
+                            built.push((
+                                observation.final_sequence,
+                                record.record_sha256.clone(),
+                                observation.observation_sha256.clone(),
+                            ));
+                        }
+                        if let (Some(dir), Some(key)) = (cache_dir, key.as_deref()) {
+                            let encoded = Value::Array(
+                                built
+                                    .iter()
+                                    .map(|(trade_id, record_sha256, observation_sha256)| {
+                                        serde_json::json!({
+                                            "trade_id": trade_id,
+                                            "record_sha256": record_sha256,
+                                            "observation_sha256": observation_sha256,
+                                        })
+                                    })
+                                    .collect(),
+                            );
+                            write_oracle_cache(dir, "trade", key, &encoded)?;
+                        }
+                        built
+                    };
+                    for (trade_id, record_sha256, observation_sha256) in rows {
+                        by_id.entry(trade_id).or_default().push(RawTradeEvidence {
+                            record_sha256,
+                            observation_sha256,
+                        });
                     }
                 }
             }
@@ -372,6 +702,7 @@ fn oracle_depth_by_lane(
     declared_artifacts: &[String],
     tolerate_missing_ack: bool,
     unsealed_lanes: &BTreeSet<String>,
+    cache_dir: Option<&Path>,
 ) -> Result<DepthOracle> {
     let roots = scoped_artifact_roots(artifact_root, declared_artifacts);
     if roots.is_empty() {
@@ -406,9 +737,70 @@ fn oracle_depth_by_lane(
                     if unsealed && tolerate_missing_ack {
                         continue;
                     }
-                    for observation in
-                        trusted_depth_observations(&generation, tolerate_missing_ack)?
-                    {
+                    let key = match cache_dir {
+                        Some(_) if !unsealed => sealed_stream_key(&generation, "depth")?,
+                        _ => None,
+                    };
+                    let cached = key.as_ref().and_then(|key| {
+                        cache_dir.and_then(|dir| read_oracle_cache(dir, "depth", key))
+                    });
+                    let observations = if let Some(Value::Array(rows)) = cached {
+                        let mut parsed = Vec::new();
+                        let mut valid = true;
+                        for row in rows {
+                            let Some(list) = row.as_array() else {
+                                valid = false;
+                                break;
+                            };
+                            if list.len() != 3 {
+                                valid = false;
+                                break;
+                            }
+                            let Some(first) = list[0].as_u64() else {
+                                valid = false;
+                                break;
+                            };
+                            let Some(final_sequence) = list[1].as_u64() else {
+                                valid = false;
+                                break;
+                            };
+                            let Some(digest) = list[2].as_str() else {
+                                valid = false;
+                                break;
+                            };
+                            parsed.push((first, final_sequence, digest.to_owned()));
+                        }
+                        if valid {
+                            Some(parsed)
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    };
+                    let observations = if let Some(observations) = observations {
+                        observations
+                    } else {
+                        let built =
+                            trusted_depth_observations(&generation, tolerate_missing_ack)?;
+                        if let (Some(dir), Some(key)) = (cache_dir, key.as_deref()) {
+                            let encoded = Value::Array(
+                                built
+                                    .iter()
+                                    .map(|(first, final_sequence, digest)| {
+                                        Value::Array(vec![
+                                            Value::from(*first),
+                                            Value::from(*final_sequence),
+                                            Value::from(digest.clone()),
+                                        ])
+                                    })
+                                    .collect(),
+                            );
+                            write_oracle_cache(dir, "depth", key, &encoded)?;
+                        }
+                        built
+                    };
+                    for observation in observations {
                         lane_map
                             .entry(observation.1)
                             .or_default()
@@ -460,7 +852,9 @@ struct CanonicalObservationSet {
     /// against the declared snapshot boundary.
     depth_rebootstraps: Vec<(u64, u64, String)>,
     terminal_serving_lane: Option<String>,
+    terminal_completion_scope: Option<String>,
     trade_floor: Option<u64>,
+    has_startup_context: bool,
     /// Artifact identities declared by the segment chain (STARTED /
     /// RESUMED): the raw oracle is restricted to exactly these artifacts,
     /// so a service stopped before a pending epoch transition verifies the
@@ -472,11 +866,19 @@ struct CanonicalObservationSet {
     last_depth_event: Option<&'static str>,
 }
 
-fn collect_journal_observations(journal: &Path, set: &mut CanonicalObservationSet) -> Result<()> {
+fn collect_journal_observations(
+    journal: &Path,
+    set: &mut CanonicalObservationSet,
+    tolerate_partial_tail: bool,
+) -> Result<()> {
     let bytes =
         fs::read(journal).map_err(|error| format!("read {}: {error}", journal.display()))?;
     let mut rebootstrap_pending = false;
-    for line in bytes.split(|byte| *byte == b'\n') {
+    for part in bytes.split_inclusive(|byte| *byte == b'\n') {
+        if !part.ends_with(b"\n") && tolerate_partial_tail {
+            break;
+        }
+        let line = part.strip_suffix(b"\n").unwrap_or(part);
         if line.is_empty() {
             continue;
         }
@@ -484,15 +886,11 @@ fn collect_journal_observations(journal: &Path, set: &mut CanonicalObservationSe
             .map_err(|error| format!("invalid journal JSON: {error}"))?;
         let payload = &envelope["body"]["payload"];
         match payload["event"].as_str() {
-            Some("ARBITRATION_STARTED") => {
-                if set.trade_floor.is_none() {
-                    set.trade_floor = payload["trade_floor"].as_u64();
+            Some("ARBITRATION_STARTED" | "ARBITRATION_RESUMED") => {
+                set.terminal_completion_scope = None;
+                if payload["event"].as_str() == Some("ARBITRATION_STARTED") {
+                    set.has_startup_context = true;
                 }
-                if let Some(artifact) = payload["artifact_root"].as_str() {
-                    set.declared_artifacts.push(artifact.to_owned());
-                }
-            }
-            Some("ARBITRATION_RESUMED") => {
                 // The canonical window starts at the FIRST segment's floor;
                 // later segments declare their own (higher) resumed floors.
                 if set.trade_floor.is_none() {
@@ -585,6 +983,11 @@ fn collect_journal_observations(journal: &Path, set: &mut CanonicalObservationSe
                 set.last_depth_event = Some("gap");
             }
             Some("ARBITRATION_TERMINAL") => {
+                let scope = &payload["completion_scope"];
+                if !scope.is_null() && !matches!(scope.as_str(), Some("HANDOFF" | "SEALED_DRAIN")) {
+                    return Err("unknown terminal completion_scope".to_owned());
+                }
+                set.terminal_completion_scope = scope.as_str().map(str::to_owned);
                 set.terminal_serving_lane = payload["serving_lane_at_terminal"]
                     .as_str()
                     .map(str::to_owned);
@@ -595,50 +998,110 @@ fn collect_journal_observations(journal: &Path, set: &mut CanonicalObservationSe
     Ok(())
 }
 
-/// Trade oracle (ADR-17 B5): the canonical trade stream must equal the raw
-/// union restricted to IDs above the declared trade floor — exact equality,
-/// so an omission at the start, the middle or the end of the window is a
-/// rejection.  With `bound_to_last` the window is additionally bounded by
-/// the stream's last published ID (live-prefix / tail-segment audits: every
-/// union ID up to the published position must already be published, later
-/// union IDs are legitimately pending).  Every published trade and every
-/// correction must carry the exact raw observation digest and a lineage
-/// record that exists in the raw capture of the ID (a rehashed-content
-/// forgery fails here, not only on the checksum).
+/// ADR-17 reconstructed view: ordered observations plus first UNKNOWN late
+/// corrections must equal the independent raw union exactly. Duplicate late
+/// records corroborate an existing identity; they never increase cardinality.
 fn verify_trades_against_raw(
     canonical: &CanonicalObservationSet,
     raw_union: &BTreeMap<u64, Vec<RawTradeEvidence>>,
     bound_to_last: bool,
-) -> Result<()> {
-    if canonical.trades.is_empty() && bound_to_last {
-        // Live prefix / bounded tail: nothing published yet in this window,
-        // so there is nothing to verify against the raw union yet (the
-        // closed full-set audit enforces at the terminal).
-        return Ok(());
-    }
+) -> Result<usize> {
     let floor = canonical.trade_floor.unwrap_or(0);
-    let upper_bound = if bound_to_last {
-        canonical.trades.last().map(|trade| trade.trade_id)
-    } else {
-        None
+    let upper_bound = bound_to_last.then(|| canonical.trades.last().map_or(floor, |t| t.trade_id));
+    let identity = |id: u64, record: &str, digest: &str, label: &str| -> Result<()> {
+        let evidence = raw_union
+            .get(&id)
+            .ok_or_else(|| format!("{label} {id} has no raw evidence"))?;
+        let digests: BTreeSet<&str> = evidence
+            .iter()
+            .map(|item| item.observation_sha256.as_str())
+            .collect();
+        if digests.len() != 1 {
+            return Err(format!("raw trade {id} has conflicting identities"));
+        }
+        if !digests.contains(digest) {
+            return Err(format!(
+                "{label} {id} carries an observation digest absent from the raw capture"
+            ));
+        }
+        if !evidence
+            .iter()
+            .any(|item| item.record_sha256 == record && item.observation_sha256 == digest)
+        {
+            return Err(format!(
+                "{label} {id} carries a raw lineage record absent from the raw capture"
+            ));
+        }
+        Ok(())
     };
-    let mut expected: Vec<u64> = raw_union
+    let mut reconstructed: BTreeMap<u64, &str> = BTreeMap::new();
+    for trade in &canonical.trades {
+        identity(
+            trade.trade_id,
+            &trade.record_sha256,
+            &trade.observation_sha256,
+            "canonical trade",
+        )?;
+        if reconstructed
+            .insert(trade.trade_id, &trade.observation_sha256)
+            .is_some()
+        {
+            return Err("canonical journal publishes a duplicate trade ID".to_owned());
+        }
+    }
+    for correction in &canonical.corrections {
+        let id = correction.trade_id;
+        identity(
+            id,
+            &correction.record_sha256,
+            &correction.observation_sha256,
+            "trade correction",
+        )?;
+        match correction.kind.as_str() {
+            "duplicate" => {
+                if reconstructed.get(&id).copied() != Some(correction.observation_sha256.as_str()) {
+                    return Err(format!(
+                        "trade correction {id} kind=duplicate contradicts the published identity"
+                    ));
+                }
+            }
+            "unknown" => {
+                if canonical.has_startup_context && id <= floor {
+                    return Err(
+                        "unknown correction is at or below the startup trade floor".to_owned()
+                    );
+                }
+                if reconstructed
+                    .insert(id, &correction.observation_sha256)
+                    .is_some()
+                {
+                    return Err(format!(
+                        "trade correction {id} kind=unknown contradicts the published identity"
+                    ));
+                }
+            }
+            _ => {
+                return Err(format!(
+                    "trade correction {id} carries an unknown classification"
+                ));
+            }
+        }
+    }
+    let expected: Vec<u64> = raw_union
+        .keys()
+        .copied()
+        .filter(|id| *id > floor && upper_bound.is_none_or(|bound| *id <= bound))
+        .collect();
+    let actual: Vec<u64> = reconstructed
         .keys()
         .copied()
         .filter(|id| *id > floor)
-        .filter(|id| upper_bound.is_none_or(|bound| *id <= bound))
         .collect();
-    expected.sort_unstable();
-    let published: BTreeSet<u64> = canonical.trades.iter().map(|t| t.trade_id).collect();
-    if published.len() != canonical.trades.len() {
-        return Err("canonical journal publishes a duplicate trade ID".to_owned());
-    }
-    let actual: Vec<u64> = canonical.trades.iter().map(|t| t.trade_id).collect();
     if actual != expected {
         let missing: Vec<u64> = expected
             .iter()
             .copied()
-            .filter(|id| !published.contains(id))
+            .filter(|id| !reconstructed.contains_key(id))
             .take(8)
             .collect();
         let invented: Vec<u64> = actual
@@ -648,90 +1111,12 @@ fn verify_trades_against_raw(
             .take(8)
             .collect();
         return Err(format!(
-            "canonical trade stream differs from the raw union: canonical={} union_window={} missing_examples={missing:?} invented_examples={invented:?}",
-            canonical.trades.len(),
+            "canonical trade stream differs from the raw union: reconstructed={} union_window={} missing_examples={missing:?} invented_examples={invented:?}",
+            actual.len(),
             expected.len()
         ));
     }
-    // Per-record payload + lineage against raw (B5 identity/payload/lineage).
-    for trade in &canonical.trades {
-        let evidence = raw_union
-            .get(&trade.trade_id)
-            .ok_or_else(|| format!("canonical trade {} has no raw evidence", trade.trade_id))?;
-        if !evidence
-            .iter()
-            .any(|item| item.observation_sha256 == trade.observation_sha256)
-        {
-            return Err(format!(
-                "canonical trade {} carries an observation digest absent from the raw capture (rehashed content)",
-                trade.trade_id
-            ));
-        }
-        if !evidence
-            .iter()
-            .any(|item| item.record_sha256 == trade.record_sha256)
-        {
-            return Err(format!(
-                "canonical trade {} carries a raw lineage record absent from the raw capture",
-                trade.trade_id
-            ));
-        }
-    }
-    // Corrections: validated against the raw and against the published set.
-    for correction in &canonical.corrections {
-        let evidence = raw_union.get(&correction.trade_id).ok_or_else(|| {
-            format!(
-                "trade correction {} references an ID absent from the raw capture",
-                correction.trade_id
-            )
-        })?;
-        if !evidence
-            .iter()
-            .any(|item| item.observation_sha256 == correction.observation_sha256)
-        {
-            return Err(format!(
-                "trade correction {} carries an observation digest absent from the raw capture",
-                correction.trade_id
-            ));
-        }
-        if !evidence
-            .iter()
-            .any(|item| item.record_sha256 == correction.record_sha256)
-        {
-            return Err(format!(
-                "trade correction {} carries a raw lineage record absent from the raw capture",
-                correction.trade_id
-            ));
-        }
-        let published_digest = canonical
-            .trades
-            .iter()
-            .find(|trade| trade.trade_id == correction.trade_id)
-            .map(|trade| trade.observation_sha256.as_str());
-        match (correction.kind.as_str(), published_digest) {
-            ("duplicate", Some(digest)) if digest == correction.observation_sha256 => {}
-            ("duplicate", _) => {
-                return Err(format!(
-                    "trade correction {} kind=duplicate contradicts the published identity",
-                    correction.trade_id
-                ));
-            }
-            ("unknown", None) => {}
-            ("unknown", Some(_)) => {
-                return Err(format!(
-                    "trade correction {} kind=unknown contradicts the published identity",
-                    correction.trade_id
-                ));
-            }
-            _ => {
-                return Err(format!(
-                    "trade correction {} carries an unknown classification",
-                    correction.trade_id
-                ));
-            }
-        }
-    }
-    Ok(())
+    Ok(reconstructed.len())
 }
 
 /// Depth oracle (ADR-17 B5): every canonical frame must exist in the
@@ -858,10 +1243,12 @@ fn verify_depth_against_raw(
                 let lane_oracle = raw_depth
                     .get(lane)
                     .ok_or_else(|| format!("canonical depth frame names an unknown lane {lane}"))?;
-                let next = last.final_sequence.saturating_add(1);
-                if lane_oracle
-                    .values()
-                    .any(|variants| variants.iter().any(|(first, _)| *first == next))
+                // A trusted overlap U <= next <= u also continues the book;
+                // equality of U alone misses a real terminal omission.
+                if let Some(next) = last.final_sequence.checked_add(1)
+                    && lane_oracle.iter().any(|(final_sequence, variants)| {
+                        *final_sequence >= next && variants.iter().any(|(first, _)| *first <= next)
+                    })
                 {
                     return Err(format!(
                         "canonical depth stream ends at update {} but the {lane} sealed evidence continues at update {next} (final omission)",
@@ -884,6 +1271,13 @@ fn verify_depth_against_raw(
     Ok(())
 }
 
+struct OracleVerification {
+    reconstructed_trades: Option<usize>,
+    trade_identity: &'static str,
+    depth_scope_complete: bool,
+    terminal_completion_scope: Option<String>,
+}
+
 fn verify_with_oracle(
     journals: &[PathBuf],
     oracle_artifact: Option<&Path>,
@@ -891,27 +1285,35 @@ fn verify_with_oracle(
     tolerant_lanes: bool,
     bound_to_last: bool,
     enforce_final_boundary: bool,
-) -> Result<()> {
+    expected_artifacts: Option<&[String]>,
+    cache_dir: Option<&Path>,
+) -> Result<OracleVerification> {
     let mut canonical = CanonicalObservationSet::default();
-    for journal in journals {
-        collect_journal_observations(journal, &mut canonical)?;
+    for (index, journal) in journals.iter().enumerate() {
+        collect_journal_observations(
+            journal,
+            &mut canonical,
+            bound_to_last || index + 1 < journals.len(),
+        )?;
     }
+    let trade_identity = if bound_to_last && canonical.trades.is_empty() {
+        "SKIPPED_EMPTY_PREFIX"
+    } else {
+        "PASS"
+    };
+    let declared = expected_artifacts.unwrap_or(&canonical.declared_artifacts);
     if let Some(artifact) = oracle_artifact {
         // ADR-17 B5 (defect hrs-14572a22e336): compute the unsealed-lane
         // classification FIRST and share it with the oracle build, so the
         // exclusion and the tolerance always come from the SAME snapshot of
         // the generation terminal state (the earlier two-read interleaving
         // rejected frames the oracle had legitimately excluded).
-        let unsealed = unsealed_depth_lanes(artifact, &canonical.declared_artifacts)?;
-        let raw_union =
-            oracle_trades_union(artifact, &canonical.declared_artifacts, tolerant_lanes)?;
-        let raw_depth = oracle_depth_by_lane(
-            artifact,
-            &canonical.declared_artifacts,
-            tolerant_lanes,
-            &unsealed,
-        )?;
-        verify_trades_against_raw(&canonical, &raw_union, bound_to_last)?;
+        let unsealed = unsealed_depth_lanes(artifact, declared)?;
+        let raw_union = oracle_trades_union(artifact, declared, tolerant_lanes, cache_dir)?;
+        let raw_depth =
+            oracle_depth_by_lane(artifact, declared, tolerant_lanes, &unsealed, cache_dir)?;
+        let reconstructed_trades =
+            verify_trades_against_raw(&canonical, &raw_union, bound_to_last)?;
         verify_depth_against_raw(
             &canonical,
             &raw_depth,
@@ -919,7 +1321,12 @@ fn verify_with_oracle(
             enforce_final_boundary,
             &unsealed,
         )?;
-        return Ok(());
+        return Ok(OracleVerification {
+            trade_identity,
+            reconstructed_trades: Some(reconstructed_trades),
+            depth_scope_complete: unsealed.is_empty(),
+            terminal_completion_scope: canonical.terminal_completion_scope,
+        });
     }
     if let Some(generation) = oracle_generation {
         // Single untouched lane generation: trades must equal that
@@ -936,7 +1343,8 @@ fn verify_with_oracle(
                     observation_sha256: observation.observation_sha256.clone(),
                 });
         }
-        verify_trades_against_raw(&canonical, &raw_union, bound_to_last)?;
+        let reconstructed_trades =
+            verify_trades_against_raw(&canonical, &raw_union, bound_to_last)?;
         let generation_text = generation.to_string_lossy().replace('\\', "/");
         let lane = if generation_text.contains("/p/") {
             "p"
@@ -962,7 +1370,12 @@ fn verify_with_oracle(
             enforce_final_boundary,
             &BTreeSet::new(),
         )?;
-        return Ok(());
+        return Ok(OracleVerification {
+            trade_identity,
+            reconstructed_trades: Some(reconstructed_trades),
+            depth_scope_complete: stream_fully_sealed(&generation.join("depth"))?,
+            terminal_completion_scope: canonical.terminal_completion_scope,
+        });
     }
     Err("an oracle mode must be selected for identity verification".to_owned())
 }
@@ -1011,9 +1424,11 @@ fn run() -> Result<serde_json::Value> {
     let mut journal_root: Option<PathBuf> = None;
     let mut oracle_generation: Option<PathBuf> = None;
     let mut oracle_artifact: Option<PathBuf> = None;
+    let mut expected_artifact_inventory: Option<PathBuf> = None;
     let mut incremental = false;
     let mut tail_segment_only = false;
-    let mut tail_interrupted = false;
+    let mut journal_prefix = false;
+    let mut oracle_cache: Option<PathBuf> = None;
     let rest: Vec<String> = args.collect();
     let mut index = 0_usize;
     while index < rest.len() {
@@ -1043,9 +1458,27 @@ fn run() -> Result<serde_json::Value> {
                 incremental = true;
                 index += 1;
             }
+            "--journal-prefix" => {
+                journal_prefix = true;
+                index += 1;
+            }
+            "--expected-artifact-inventory" => {
+                if index + 1 >= rest.len() {
+                    return Err("--expected-artifact-inventory expects exactly one file".to_owned());
+                }
+                expected_artifact_inventory = Some(PathBuf::from(&rest[index + 1]));
+                index += 2;
+            }
             "--tail-segment-only" => {
                 tail_segment_only = true;
                 index += 1;
+            }
+            "--oracle-cache" => {
+                if index + 1 >= rest.len() {
+                    return Err("--oracle-cache expects exactly one directory".to_owned());
+                }
+                oracle_cache = Some(PathBuf::from(&rest[index + 1]));
+                index += 2;
             }
             _ => {
                 if journal_arg.is_some() {
@@ -1059,6 +1492,17 @@ fn run() -> Result<serde_json::Value> {
     if oracle_generation.is_some() && oracle_artifact.is_some() {
         return Err("choose exactly one oracle mode".to_owned());
     }
+    if expected_artifact_inventory.is_some() && oracle_artifact.is_none() {
+        return Err("expected artifact inventory requires --oracle-artifact".to_owned());
+    }
+    if journal_prefix
+        && (journal_root.is_none()
+            || expected_artifact_inventory.is_none()
+            || incremental
+            || tail_segment_only)
+    {
+        return Err("--journal-prefix requires --journal-root and --expected-artifact-inventory without another prefix mode".to_owned());
+    }
     let journal = match (&journal_root, journal_arg) {
         (None, Some(journal)) => PathBuf::from(journal),
         (Some(_), None) => PathBuf::from("."),
@@ -1071,9 +1515,6 @@ fn run() -> Result<serde_json::Value> {
             ));
         }
     };
-    if incremental && journal_root.is_some() {
-        return Err("incremental prefix audits verify one active segment".to_owned());
-    }
     if tail_segment_only && (incremental || journal_root.is_some() || oracle_artifact.is_none()) {
         return Err(
             "--tail-segment-only requires one sealed resume segment and --oracle-artifact"
@@ -1081,7 +1522,7 @@ fn run() -> Result<serde_json::Value> {
         );
     }
 
-    let journals: Vec<PathBuf> = match &journal_root {
+    let mut journals: Vec<PathBuf> = match &journal_root {
         Some(root) => {
             let segments = sorted_journal_segments(root)?;
             if segments.is_empty() {
@@ -1094,8 +1535,37 @@ fn run() -> Result<serde_json::Value> {
         }
         None => vec![journal.clone()],
     };
+    if journal_prefix {
+        journals = select_journal_prefix(
+            expected_artifact_inventory
+                .as_ref()
+                .expect("validated inventory"),
+            &journals,
+        )?;
+    }
 
-    let (scan, terminal_complete, tail_bytes) = if incremental {
+    let inventory_cut = match &expected_artifact_inventory {
+        Some(path) => {
+            let mut canonical = CanonicalObservationSet::default();
+            for (index, journal) in journals.iter().enumerate() {
+                collect_journal_observations(
+                    journal,
+                    &mut canonical,
+                    incremental || tail_segment_only || index + 1 < journals.len(),
+                )?;
+            }
+            Some(load_expected_inventory(
+                path,
+                oracle_artifact.as_ref().expect("validated oracle mode"),
+                &journals,
+                &canonical.declared_artifacts,
+            )?)
+        }
+        None => None,
+    };
+    let (scan, clean_eof, tail_bytes) = if incremental && journal_root.is_some() {
+        scan_live_arbitration_journal_set_incremental(&journals)?
+    } else if incremental {
         // Live prefix audit: a single active segment, terminal not required.
         // A resumed segment carries its own chain context in its
         // ARBITRATION_RESUMED record.
@@ -1134,7 +1604,7 @@ fn run() -> Result<serde_json::Value> {
             .and_then(Value::as_str)
             .ok_or_else(|| "tail segment lacks its first event".to_owned())?;
         if event == "ARBITRATION_STARTED" {
-            (scan_live_arbitration_journal(&journals[0])?, true, 0_u64)
+            scan_live_arbitration_journal_incremental(&journals[0])?
         } else if event == "ARBITRATION_RESUMED" {
             let previous_sha = first_payload
                 .get("previous_journal_sha256")
@@ -1145,23 +1615,7 @@ fn run() -> Result<serde_json::Value> {
                 .get("trade_floor")
                 .and_then(Value::as_u64)
                 .ok_or_else(|| "tail segment lacks trade_floor".to_owned())?;
-            match scan_live_arbitration_journal_tail(&journals[0], &previous_sha, floor) {
-                Ok(scan) => (scan, true, 0_u64),
-                Err(error) if error.contains("lacks a terminal record") => {
-                    // A segment interrupted by a crash carries no terminal:
-                    // its structure and floor are still auditable as a live
-                    // prefix; the full-set audit at the terminal enforces
-                    // the closed contract.
-                    tail_interrupted = true;
-                    let (scan, clean_eof, tail) = scan_live_arbitration_journal_tail_incremental(
-                        &journals[0],
-                        &previous_sha,
-                        floor,
-                    )?;
-                    (scan, clean_eof, tail)
-                }
-                Err(error) => return Err(error),
-            }
+            scan_live_arbitration_journal_tail_incremental(&journals[0], &previous_sha, floor)?
         } else {
             return Err("tail segment does not open with STARTED or RESUMED".to_owned());
         }
@@ -1170,7 +1624,7 @@ fn run() -> Result<serde_json::Value> {
     } else {
         (scan_live_arbitration_journal_set(&journals)?, true, 0_u64)
     };
-    let (tolerant_lanes, bound_to_last, enforce_final_boundary) = if incremental {
+    let (tolerant_lanes, bound_to_last, enforce_final_boundary) = if incremental || journal_prefix {
         (true, true, false)
     } else if tail_segment_only {
         // Bounded per-epoch verification: the segment ends at an epoch
@@ -1180,7 +1634,9 @@ fn run() -> Result<serde_json::Value> {
     } else {
         (false, false, true)
     };
-    let oracle_identity = if oracle_artifact.is_some() || oracle_generation.is_some() {
+    let terminal_complete = scan.terminal_seen && clean_eof;
+    let tail_interrupted = tail_segment_only && !terminal_complete;
+    let oracle_result = if oracle_artifact.is_some() || oracle_generation.is_some() {
         verify_with_oracle(
             &journals,
             oracle_artifact.as_deref(),
@@ -1188,22 +1644,55 @@ fn run() -> Result<serde_json::Value> {
             tolerant_lanes,
             bound_to_last,
             enforce_final_boundary,
-        )?;
+            inventory_cut.as_ref().map(|cut| cut.artifacts.as_slice()),
+            oracle_cache.as_deref(),
+        )?
+    } else {
+        OracleVerification {
+            trade_identity: "SKIPPED",
+            reconstructed_trades: None,
+            depth_scope_complete: false,
+            terminal_completion_scope: None,
+        }
+    };
+    let oracle_identity = if oracle_result.trade_identity == "PASS" {
         "PASS"
     } else {
         "SKIPPED"
     };
+    if let Some(cut) = &inventory_cut {
+        check_inventory_journals(cut)?;
+    }
+    let audit_scope = if journal_prefix {
+        "SEALED_JOURNAL_PREFIX"
+    } else if incremental {
+        "LIVE_PREFIX"
+    } else if tail_interrupted {
+        "INTERRUPTED_SEGMENT_PREFIX"
+    } else if tail_segment_only {
+        "SEALED_SEGMENT_PREFIX"
+    } else {
+        "CLOSED_JOURNAL_SET"
+    };
 
     Ok(serde_json::json!({
-        "schema": "LiveArbitrationVerificationV1",
+        "schema": "LiveArbitrationVerificationV2",
         "status": "PASS",
         "journal": journal,
         "journal_root": journal_root,
         "segments": scan.segments,
         "incremental": incremental,
         "tail_segment_only": tail_segment_only,
+        "journal_prefix": journal_prefix,
         "tail_interrupted": tail_interrupted,
         "terminal_complete": terminal_complete,
+        "clean_eof": clean_eof,
+        "audit_scope": audit_scope,
+        "artifact_coverage": if inventory_cut.is_some() { "PASS" } else { "UNPROVEN" },
+        "expected_artifact_inventory_sha256": inventory_cut.as_ref().map(|cut| &cut.sha256),
+        "coverage_exhaustive": inventory_cut.is_some() && terminal_complete && !bound_to_last
+            && oracle_identity == "PASS" && oracle_result.depth_scope_complete
+            && oracle_result.terminal_completion_scope.as_deref() == Some("SEALED_DRAIN"),
         "tail_bytes": tail_bytes,
         "records": scan.records,
         "observations": scan.observations,
@@ -1222,6 +1711,11 @@ fn run() -> Result<serde_json::Value> {
         "oracle_generation": oracle_generation,
         "oracle_artifact": oracle_artifact,
         "oracle_identity": oracle_identity,
+        "oracle_trade_identity": oracle_result.trade_identity,
+        "canonical_view": "OBSERVATIONS_PLUS_UNKNOWN_LATE_CORRECTIONS",
+        "reconstructed_trades": oracle_result.reconstructed_trades,
+        "oracle_depth_scope_complete": oracle_result.depth_scope_complete,
+        "terminal_completion_scope": oracle_result.terminal_completion_scope,
         "schema_compatibility": {
             "policy": "reject_unknown_kinds",
             "detail": "Trade late corrections without kind in {duplicate, unknown} are REJECTED (fail-closed), never silently reinterpreted; legacy journals must be re-verified against raw evidence."
@@ -1232,6 +1726,22 @@ fn run() -> Result<serde_json::Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn oracle_cache_rejects_a_file_whose_key_does_not_match() {
+        let dir = std::env::temp_dir().join(format!("oracle-cache-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        write_oracle_cache(&dir, "trade", "abc", &serde_json::json!([])).unwrap();
+        let loaded = read_oracle_cache(&dir, "trade", "abc").expect("matching key loads");
+        assert_eq!(loaded, serde_json::json!([]));
+        fs::write(
+            dir.join("trade").join("abc.json"),
+            br#"{"key":"nope","rows":[{"trade_id":1}]}"#,
+        )
+        .unwrap();
+        assert!(read_oracle_cache(&dir, "trade", "abc").is_none());
+        let _ = fs::remove_dir_all(&dir);
+    }
 
     fn evidence(record: &str, observation: &str) -> Vec<RawTradeEvidence> {
         vec![RawTradeEvidence {

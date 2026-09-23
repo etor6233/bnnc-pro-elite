@@ -7,7 +7,7 @@ Python verifier against the exact artifacts referenced by the terminal file.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from hashlib import sha256
 import json
 import os
@@ -59,6 +59,14 @@ LIVE_ARBITRATION_KEYS = (
     "rust_report_sha256", "python_report", "python_report_sha256",
     "oracle_identity", "canonical_trades", "canonical_depth_frames",
     "canonical_gaps", "canonical_segments", "exit_code",
+)
+LIVE_ARBITRATION_KEYS_V2 = LIVE_ARBITRATION_KEYS + (
+    "expected_artifact_inventory", "expected_artifact_inventory_sha256",
+)
+OBSERVER_WINDOW_KEYS = (
+    "epoch", "artifact_root", "started_wall_ns", "ready_wall_ns",
+    "stop_requested_wall_ns", "terminal_wall_ns", "verification_path",
+    "verification_sha256",
 )
 INCOMPLETE_VERIFICATION_KEYS = (
     "symbol", "epoch", "status", "exit_code", "artifact",
@@ -116,6 +124,20 @@ def _root(path: Path) -> Path:
     if not resolved.is_dir():
         _fail("service root is not a directory")
     return resolved
+
+
+def _file_sha256(path: Path, label: str) -> str:
+    if path.is_symlink() or not path.is_file():
+        _fail(f"{label} is not a regular file")
+    before = path.stat()
+    digest = sha256()
+    with path.open("rb") as handle:
+        for block in iter(lambda: handle.read(MIB), b""):
+            digest.update(block)
+    after = path.stat()
+    if (before.st_ino, before.st_size, before.st_mtime_ns) != (after.st_ino, after.st_size, after.st_mtime_ns):
+        _fail(f"{label} changed during verification")
+    return digest.hexdigest()
 
 
 def _u64(value: Any, label: str) -> int:
@@ -231,6 +253,251 @@ def _observer_entry(root: Path, value: Any, expected_path: str, identity: str) -
     return report
 
 
+def _utc_ns(value: Any, label: str) -> int:
+    stamp = _time(value, label)
+    if stamp.tzinfo is None or stamp.utcoffset() is None:
+        _fail(f"{label} has no timezone")
+    delta = stamp.astimezone(timezone.utc) - datetime(1970, 1, 1, tzinfo=timezone.utc)
+    return (delta.days * 86400 + delta.seconds) * 1_000_000_000 + delta.microseconds * 1000
+
+
+def _verify_observer_windows(
+    root: Path, observers: dict[str, Any], records: list[dict[str, Any]], *, skipped: bool,
+) -> dict[str, Any]:
+    """Verify V2 observer lifecycles, not continuous network reachability.
+
+    The service journal independently inventories starts/stops, while each
+    nested verifier replays the sealed artifact bytes. Only the conservative
+    READY -> stop-request interval counts, never process exit or report time.
+    """
+    kinds = {"kernel_network": ("kernel", "run_id"),
+             "network_witness": ("network", "observation_id")}
+    inventory = {kind: observers[kind] for kind in kinds}
+    if any(not isinstance(items, list) for items in inventory.values()):
+        _fail("V2 observer inventories must be arrays")
+    events: dict[tuple[str, int, str], tuple[int, dict[str, Any]]] = {}
+    boundaries: dict[str, int] = {}
+    capture_started: dict[tuple[str, int], int] = {}
+    capture_ended: dict[tuple[str, int], int] = {}
+    for index, record in enumerate(records):
+        body = record["body"]
+        payload = body["payload"]
+        event = payload.get("event") if isinstance(payload, dict) else None
+        if event in {"SYMBOL_EPOCH_LAUNCHED", "SYMBOL_EPOCH_EXITED", "SYMBOL_FINAL_EPOCH_EXITED"}:
+            key = (payload.get("symbol"), _u64(payload.get("epoch"), "capture epoch"))
+            if key[0] not in {"BTCUSDT", "ETHUSDT"} or key[1] == 0:
+                _fail("capture lifecycle identity is invalid")
+            wall = _u64(body["wall_ns"], "capture lifecycle wall clock")
+            if event == "SYMBOL_EPOCH_LAUNCHED":
+                if key in capture_started:
+                    _fail("capture lifecycle launch is duplicated")
+                capture_started[key] = wall
+            else:
+                if key not in capture_started or key in capture_ended or wall < capture_started[key]:
+                    _fail("capture lifecycle exit is unmatched or regressed")
+                capture_ended[key] = wall
+        if event in {"OBSERVER_CAPTURE_INTERVAL_STARTED", "OBSERVER_CAPTURE_INTERVAL_ENDED"}:
+            if tuple(payload) != ("event",) or event in boundaries:
+                _fail("observer capture boundary is duplicated or malformed")
+            boundaries[event] = _u64(body["wall_ns"], "observer capture boundary")
+        elif event in {"OBSERVER_WINDOW_READY", "OBSERVER_WINDOW_STOP_REQUESTED", "OBSERVER_WINDOW_SEALED"}:
+            kind = payload.get("kind")
+            epoch = _u64(payload.get("epoch"), "observer event epoch")
+            if kind not in kinds or epoch == 0:
+                _fail("observer event identity is invalid")
+            key = (kind, epoch, event)
+            if key in events:
+                _fail("observer lifecycle event is duplicated")
+            events[key] = (index, payload)
+    if skipped:
+        if events or any(inventory.values()):
+            _fail("skipped observers nevertheless declare window evidence")
+        return {"status": "SKIPPED_NOT_ELEVATED", "windows": 0}
+    if set(boundaries) != {"OBSERVER_CAPTURE_INTERVAL_STARTED", "OBSERVER_CAPTURE_INTERVAL_ENDED"}:
+        _fail("observer coverage lacks its exact required interval")
+    lower = boundaries["OBSERVER_CAPTURE_INTERVAL_STARTED"]
+    upper = boundaries["OBSERVER_CAPTURE_INTERVAL_ENDED"]
+    if upper <= lower:
+        _fail("observer required interval regressed or is empty")
+    if (not capture_started or set(capture_started) != set(capture_ended)
+            or min(capture_started.values()) < lower or max(capture_ended.values()) > upper):
+        _fail("observer boundaries do not cover the complete capture lifecycle")
+    count = len(inventory["kernel_network"])
+    if not count or len(inventory["network_witness"]) != count:
+        _fail("observer window pairs are missing")
+    epoch_root = root / "obs" / "epochs"
+    if not epoch_root.is_dir() or {item.name for item in epoch_root.iterdir() if item.is_dir()} != {
+        f"{epoch:06d}" for epoch in range(1, count + 1)
+    }:
+        _fail("observer on-disk window inventory differs from the terminal")
+    consumed: set[tuple[str, int, str]] = set()
+    for kind, (folder, identity) in kinds.items():
+        covered_until = lower
+        previous_stops: list[int] = []
+        previous_ready = -1
+        identities: set[str] = set()
+        for epoch, item in enumerate(inventory[kind], 1):
+            if not isinstance(item, dict) or tuple(item) != OBSERVER_WINDOW_KEYS + (identity,):
+                _fail("observer window schema/order drifted")
+            if _u64(item["epoch"], "observer epoch") != epoch:
+                _fail("observer window sequence is not complete")
+            expected_root = f"obs/epochs/{epoch:06d}/{folder}"
+            expected_report = f"verification/observers/{epoch:06d}/{folder}.json"
+            if item["artifact_root"] != expected_root or item["verification_path"] != expected_report:
+                _fail("observer window paths disagree with its epoch")
+            observer_id = _text(item[identity], "observer identity")
+            if observer_id in identities:
+                _fail("observer window identity was reused")
+            identities.add(observer_id)
+            start, ready, stop, terminal = (
+                _u64(item[key], key) for key in (
+                    "started_wall_ns", "ready_wall_ns", "stop_requested_wall_ns", "terminal_wall_ns",
+                )
+            )
+            if not 0 < start <= ready < stop <= terminal or ready <= previous_ready:
+                _fail("observer lifecycle timestamps are invalid")
+            if ready > covered_until or stop <= lower:
+                _fail("observer coverage has a gap or a window outside the required interval")
+            if len(previous_stops) >= 2 and ready < previous_stops[-2]:
+                _fail("more than two observer windows overlap")
+            prior_index = -1
+            for event, fields in (
+                ("OBSERVER_WINDOW_READY", ("artifact_root", "started_wall_ns", "ready_wall_ns")),
+                ("OBSERVER_WINDOW_STOP_REQUESTED", ("stop_requested_wall_ns",)),
+                ("OBSERVER_WINDOW_SEALED", ("terminal_wall_ns", "verification_path", "verification_sha256")),
+            ):
+                key = (kind, epoch, event)
+                if key not in events:
+                    _fail("observer window lacks journal lifecycle evidence")
+                index, payload = events[key]
+                expected = {"event": event, "kind": kind, "epoch": epoch,
+                            **{field: item[field] for field in fields}}
+                if payload != expected or index <= prior_index:
+                    _fail("observer lifecycle differs from the service journal")
+                consumed.add(key)
+                prior_index = index
+            artifact = _relative(root, expected_root, "observer artifact", directory=True)
+            # Reject links/reparse points rather than auditing another tree.
+            _root(root / expected_root)
+            stored = _observer_entry(root, {
+                "path": expected_report, "sha256": item["verification_sha256"], identity: observer_id,
+            }, expected_report, identity)
+            try:
+                actual = (verify_kernel_network_production(artifact) if kind == "kernel_network"
+                          else verify_network_witness(artifact))
+            except ValueError as error:
+                raise HotServiceCorruption(f"{kind} window failed independent replay: {error}") from error
+            if stored != actual or actual.get("status") != "PASS":
+                _fail("observer window report differs from independent replay")
+            if kind == "kernel_network":
+                capture = _json(_bytes(artifact / "kernel-network-capture.json", 4 * MIB, "kernel capture"), "kernel capture")
+                actual_start = _utc_ns(capture["started_utc"], "kernel start")
+                actual_end = _utc_ns(capture["completed_utc"], "kernel end")
+                if capture["controller_records"][-1].get("stop_reason") != "STOP_FILE":
+                    _fail("kernel observer stopped before its requested rotation")
+            else:
+                startup = _json(_bytes(artifact / "network-witness-startup.json", MIB, "witness startup"), "witness startup")
+                seal = _json(_bytes(artifact / "network-witness-seal.json", MIB, "witness seal"), "witness seal")
+                actual_start = _utc_ns(startup["started_utc"], "witness start")
+                actual_end = _utc_ns(seal["finished_utc"], "witness end")
+                if seal.get("stop_reason") != "STOP_FILE":
+                    _fail("network witness stopped before its requested rotation")
+            # datetime truncates sub-microsecond .NET timestamp precision;
+            # this tolerance applies only to conversion, never gap filling.
+            if actual_start > ready or actual_end + 999 < stop:
+                _fail("observer coverage exceeds its independently sealed lifetime")
+            covered_until = max(covered_until, stop)
+            previous_ready = ready
+            previous_stops.append(stop)
+        if covered_until < upper:
+            _fail("observer coverage ends before capture stopped")
+    if consumed != set(events):
+        _fail("observer terminal omitted a journalled window")
+    return {"status": "COMPLETE", "windows": count, "required_start_wall_ns": lower,
+            "required_end_wall_ns": upper, "scope": "OBSERVER_LIFECYCLE_NOT_CONTINUOUS_REACHABILITY"}
+
+
+def _verify_expected_artifacts(
+    root: Path, entry: dict[str, Any], records: list[dict[str, Any]], symbol: str,
+) -> str:
+    path = _relative(root, entry["expected_artifact_inventory"], "expected artifact inventory")
+    data = _bytes(path, 16 * MIB, "expected artifact inventory")
+    digest = sha256(data).hexdigest()
+    if digest != _digest(entry["expected_artifact_inventory_sha256"], "expected inventory digest"):
+        _fail("expected artifact inventory digest disagrees")
+    inventory = _json(data, "expected artifact inventory")
+    if tuple(inventory) != ("schema", "artifacts", "journals") or inventory["schema"] != "LiveArbitrationExpectedArtifactsV1":
+        _fail("expected artifact inventory schema drifted")
+    admitted: set[Path] = set()
+    for record in records:
+        payload = record["body"]["payload"]
+        if isinstance(payload, dict) and payload.get("event") == "RAW_ARTIFACT_DISCOVERED":
+            if tuple(payload) != ("event", "symbol", "epoch", "artifact"):
+                _fail("raw artifact admission schema drifted")
+            if payload["symbol"] not in {"BTCUSDT", "ETHUSDT"} or _u64(payload["epoch"], "admitted epoch") == 0:
+                _fail("raw artifact admission identity is invalid")
+            artifact = _relative(root, payload["artifact"], "admitted raw artifact", directory=True)
+            if payload["symbol"] == symbol.upper():
+                if artifact in admitted:
+                    _fail("raw artifact was admitted twice")
+                admitted.add(artifact)
+    expected = inventory["artifacts"]
+    if not isinstance(expected, list) or not expected:
+        _fail("expected artifact inventory is empty")
+    expected_paths: list[Path] = []
+    for value in expected:
+        absolute = Path(_text(value, "expected artifact"))
+        if not absolute.is_absolute():
+            _fail("service expected artifact is not absolute")
+        resolved = _root(absolute)
+        if not resolved.is_relative_to(root):
+            _fail("service expected artifact escapes its run")
+        expected_paths.append(resolved)
+    if len(set(expected_paths)) != len(expected_paths) or set(expected_paths) != admitted:
+        _fail("expected artifacts differ from independently journalled admissions")
+    # Admission and manifest have the same producer. Independently enumerate
+    # the service's fixed physical source layout too, so a forgotten epoch
+    # cannot disappear from both lists and still obtain a complete result.
+    source_root = root / symbol[0].lower()
+    if not source_root.is_dir():
+        _fail("service symbol source root is missing")
+    discovered: set[Path] = set()
+    for epoch_root in source_root.iterdir():
+        if not epoch_root.is_dir():
+            continue
+        if not re.fullmatch(r"e[1-9][0-9]*", epoch_root.name):
+            _fail("service source epoch directory is invalid")
+        for artifact in epoch_root.iterdir():
+            if artifact.is_dir():
+                discovered.add(_root(artifact))
+    if discovered != admitted:
+        _fail("raw source directories differ from the admitted inventory")
+    journals = inventory["journals"]
+    if not isinstance(journals, list) or not journals:
+        _fail("expected inventory has no journal cuts")
+    journal_root = _relative(root, entry["journal_root"], "canonical journal root", directory=True)
+    cuts: set[Path] = set()
+    for cut in journals:
+        if not isinstance(cut, dict) or tuple(cut) != ("path", "sha256"):
+            _fail("expected journal cut schema drifted")
+        cut_path = Path(_text(cut["path"], "expected journal cut"))
+        if not cut_path.is_absolute():
+            _fail("expected journal cut is not absolute")
+        cut_path = cut_path.resolve(strict=True)
+        if cut_path.parent != journal_root or cut_path in cuts or not cut_path.is_file():
+            _fail("expected journal cut escapes or duplicates its journal set")
+        # Stream potentially large immutable canonical journals.
+        if _file_sha256(cut_path, "expected journal cut") != _digest(cut["sha256"], "expected journal cut digest"):
+            _fail("expected journal cut changed after oracle verification")
+        cuts.add(cut_path)
+    # Match the canonical verifier's own journal-root glob, independently of
+    # the producer's supplied list. Other evidence JSON is not a journal.
+    actual_journals = {item.resolve() for item in journal_root.glob("*.jsonl") if item.is_file()}
+    if cuts != actual_journals:
+        _fail("expected inventory omitted a canonical journal")
+    return digest
+
+
 def _verify_failure(root: Path) -> dict[str, Any]:
     preflight_data = _bytes(root / "preflight.json", 4 * MIB, "preflight")
     failure_data = _bytes(root / "service-failure.json", 8 * MIB, "failure")
@@ -319,7 +586,7 @@ def verify_hot_service(path: Path) -> dict[str, Any]:
         or preflight["run_id"] != run_id
         or Path(_text(preflight["run_root"], "preflight run root")).resolve() != root
         or preflight["symbols"] != ["BTCUSDT", "ETHUSDT"]
-        or terminal["schema"] != "HotRedundantQualificationTerminalV1"
+        or terminal["schema"] not in {"HotRedundantQualificationTerminalV1", "HotRedundantQualificationTerminalV2"}
         or terminal["run_id"] != run_id
         or terminal["requested_duration_s"] != preflight["total_seconds"]
         or _time(terminal["finished_utc"], "finished") < _time(terminal["started_utc"], "started")
@@ -456,27 +723,30 @@ def verify_hot_service(path: Path) -> dict[str, Any]:
         "kernel_network", "network_witness", "system_evidence", "live_arbitration",
     ):
         _fail("observer verification inventory drifted")
-    kernel_stored = _observer_entry(root, observers["kernel_network"], "verification/kernel-network.json", "run_id")
-    network_stored = _observer_entry(root, observers["network_witness"], "verification/network-witness.json", "observation_id")
     system_stored = _observer_entry(root, observers["system_evidence"], "verification/system-evidence.json", "run_id")
-    skipped = {
-        "kernel_network": kernel_stored.get("status") == "SKIPPED_NOT_ELEVATED",
-        "network_witness": network_stored.get("status") == "SKIPPED_NOT_ELEVATED",
-    }
-    if skipped["kernel_network"] or skipped["network_witness"]:
-        if terminal["observers_skipped"] is not True:
-            _fail("observer skip recorded but the terminal does not declare observers_skipped")
-    kernel = verify_kernel_network_production(root / "obs" / "kernel") if not skipped["kernel_network"] else None
-    network = verify_network_witness(root / "obs" / "network") if not skipped["network_witness"] else None
+    if terminal["schema"] == "HotRedundantQualificationTerminalV2":
+        observer_coverage = _verify_observer_windows(
+            root, observers, records[:prefix_records], skipped=terminal["observers_skipped"],
+        )
+    else:
+        kernel_stored = _observer_entry(root, observers["kernel_network"], "verification/kernel-network.json", "run_id")
+        network_stored = _observer_entry(root, observers["network_witness"], "verification/network-witness.json", "observation_id")
+        skipped = {
+            "kernel_network": kernel_stored.get("status") == "SKIPPED_NOT_ELEVATED",
+            "network_witness": network_stored.get("status") == "SKIPPED_NOT_ELEVATED",
+        }
+        if skipped["kernel_network"] or skipped["network_witness"]:
+            if terminal["observers_skipped"] is not True:
+                _fail("observer skip recorded but the terminal does not declare observers_skipped")
+        kernel = verify_kernel_network_production(root / "obs" / "kernel") if not skipped["kernel_network"] else None
+        network = verify_network_witness(root / "obs" / "network") if not skipped["network_witness"] else None
+        for stored, actual, label in ((kernel_stored, kernel, "kernel"), (network_stored, network, "network")):
+            if actual is not None and stored != actual:
+                _fail(f"stored {label} verification differs from independent replay")
+        observer_coverage = {"status": "UNVERIFIED_LEGACY_V1"}
     system = verify_system_evidence(root / "obs" / "system")
-    for stored, actual, label in (
-        (kernel_stored, kernel, "kernel"), (network_stored, network, "network"),
-        (system_stored, system, "system"),
-    ):
-        if actual is None:
-            continue
-        if stored != actual:
-            _fail(f"stored {label} verification differs from independent replay")
+    if system_stored != system:
+        _fail("stored system verification differs from independent replay")
 
     # Live arbitration (ADR-17 B5): the terminal references the closed
     # journal-set oracle reports executed at the terminal in BOTH languages.
@@ -488,14 +758,15 @@ def verify_hot_service(path: Path) -> dict[str, Any]:
         _fail("live arbitration inventory drifted")
     for symbol in ("btcusdt", "ethusdt"):
         entry = live[symbol]
-        if not isinstance(entry, dict) or tuple(entry) != LIVE_ARBITRATION_KEYS:
+        v2 = terminal["schema"] == "HotRedundantQualificationTerminalV2"
+        if not isinstance(entry, dict) or tuple(entry) != (LIVE_ARBITRATION_KEYS_V2 if v2 else LIVE_ARBITRATION_KEYS):
             _fail("live arbitration entry schema drifted")
+        expected_digest = _verify_expected_artifacts(root, entry, records[:prefix_records], symbol) if v2 else None
         if entry["oracle_identity"] != "PASS" or entry["exit_code"] != 0:
             _fail(f"{symbol} live arbitration oracle identity is not PASS")
         _relative(root, entry["journal_root"], "canonical journal root", directory=True)
         journal_file = _relative(root, entry["journal"], f"{symbol} journal")
-        journal_data = _bytes(journal_file, 256 * MIB, f"{symbol} journal")
-        if sha256(journal_data).hexdigest() != _digest(entry["journal_sha256"], f"{symbol} journal digest"):
+        if _file_sha256(journal_file, f"{symbol} journal") != _digest(entry["journal_sha256"], f"{symbol} journal digest"):
             _fail(f"{symbol} journal digest disagrees")
         rust_path = _relative(root, entry["rust_report"], "Rust arbitration report")
         python_path = _relative(root, entry["python_report"], "Python arbitration report")
@@ -510,6 +781,16 @@ def verify_hot_service(path: Path) -> dict[str, Any]:
         for stored, label in ((rust_stored, "Rust"), (python_stored, "Python")):
             if stored.get("status") != "PASS" or stored.get("oracle_identity") != "PASS":
                 _fail(f"{symbol} {label} arbitration report is not PASS")
+            if v2 and (
+                stored.get("schema") != "LiveArbitrationVerificationV2"
+                or stored.get("artifact_coverage") != "PASS"
+                or stored.get("terminal_complete") is not True
+                or stored.get("terminal_completion_scope") != "SEALED_DRAIN"
+                or stored.get("canonical_view") != "OBSERVATIONS_PLUS_UNKNOWN_LATE_CORRECTIONS"
+                or stored.get("coverage_exhaustive") is not True
+                or stored.get("expected_artifact_inventory_sha256") != expected_digest
+            ):
+                _fail(f"{symbol} {label} arbitration report does not prove complete expected coverage")
         if (
             rust_stored.get("trades") != entry["canonical_trades"]
             or rust_stored.get("depth_frames") != entry["canonical_depth_frames"]
@@ -517,12 +798,40 @@ def verify_hot_service(path: Path) -> dict[str, Any]:
             or rust_stored.get("segments") != entry["canonical_segments"]
         ):
             _fail(f"{symbol} arbitration counts disagree with the terminal")
+        if v2:
+            python_audit = python_stored.get("audit")
+            if not isinstance(python_audit, dict):
+                _fail(f"{symbol} Python arbitration audit is missing")
+            for report in (rust_stored, python_audit):
+                for field in ("trades", "depth_frames", "gaps", "segments", "late_corrections"):
+                    _u64(report.get(field), f"{symbol} oracle {field}")
+                _digest(report.get("last_record_sha256"), f"{symbol} oracle last record digest")
+            if any(
+                python_audit.get(field) != rust_stored.get(field)
+                for field in ("trades", "depth_frames", "gaps", "segments", "late_corrections", "last_record_sha256")
+            ):
+                _fail(f"{symbol} independent arbitration reports disagree")
+            reconstructed = _u64(rust_stored.get("reconstructed_trades"), "Rust reconstructed trades")
+            python_reconstructed = _u64(python_stored.get("reconstructed_trades"), "Python reconstructed trades")
+            if (reconstructed != python_reconstructed or reconstructed < rust_stored["trades"]
+                    or reconstructed > rust_stored["trades"] + rust_stored["late_corrections"]):
+                _fail(f"{symbol} reconstructed trade views disagree or have impossible counts")
 
     failures = terminal["observer_failures"]
     closed = terminal["outer_gaps"]
     opened = terminal["open_outer_gaps"]
     if not all(isinstance(value, list) for value in (failures, closed, opened)):
         _fail("failure/gap inventories are not arrays")
+    if terminal["schema"] == "HotRedundantQualificationTerminalV2":
+        declared_failures = [_text(value, "observer failure ID") for value in failures]
+        journal_failures = {
+            _text(record["body"]["payload"].get("failure_id"), "journal observer failure ID")
+            for record in records[:prefix_records]
+            if isinstance(record["body"]["payload"], dict)
+            and record["body"]["payload"].get("event") == "OBSERVER_FAILED"
+        }
+        if len(set(declared_failures)) != len(declared_failures) or set(declared_failures) != journal_failures:
+            _fail("terminal observer failure inventory differs from the journal")
     active_gaps: dict[str, dict[str, Any]] = {}
     journal_closed: list[dict[str, Any]] = []
     for record in records[:prefix_records]:
@@ -569,10 +878,11 @@ def verify_hot_service(path: Path) -> dict[str, Any]:
     if terminal["status"] != expected_status:
         _fail("terminal status contradicts its failure/gap evidence")
     return {
-        "schema": "HotRedundantServiceVerificationV1",
+        "schema": "HotRedundantServiceVerificationV2",
         "status": "PASS",
         "run_id": run_id,
         "terminal_status": terminal["status"],
+        "observer_coverage": observer_coverage,
         "terminal_sha256": terminal_sha,
         "journal_sha256": sha256(journal_data).hexdigest(),
         "journal_records": len(records),

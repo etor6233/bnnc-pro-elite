@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
     [ValidateSet("Production", "ValidateOnly", "IntegrationTest", "Continuous")]
     [string] $Mode = "ValidateOnly",
@@ -312,7 +312,18 @@ if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administra
 }
 
 $createdMutex = $false
-$mutex = [Threading.Mutex]::new($false, "Global\BinanceHotRedundantQualificationV1", [ref]$createdMutex)
+function Get-ServiceMutexName {
+    param([string] $Repository, [bool] $TestClock, [string] $BinaryRoot)
+    if (-not $TestClock -or $BinaryRoot -eq "") { return "Global\BinanceHotRedundantQualificationV1" }
+    $normalized = [IO.Path]::GetFullPath($Repository).TrimEnd('\', '/').ToLowerInvariant()
+    if (@($normalized -split '[\\/]' | Where-Object { $_ -ceq '.local' }).Count -eq 0) {
+        throw "Concurrent test isolation requires a repository inside an exact .local directory."
+    }
+    $digest = Get-RawQualificationSha256Bytes -Bytes ([Text.UTF8Encoding]::new($false).GetBytes($normalized))
+    return "Global\BinanceHotRedundantQualificationTest_$digest"
+}
+$mutexName = Get-ServiceMutexName -Repository $repo -TestClock $isTestClock -BinaryRoot $ReleaseBinRoot
+$mutex = [Threading.Mutex]::new($false, $mutexName, [ref]$createdMutex)
 $mutexAcquired = $false
 try {
     $mutexAcquired = $mutex.WaitOne(0)
@@ -354,6 +365,14 @@ $witness = $null
 $states = @{}
 $successors = @{}
 $arbiterStates = @{}
+# Independent inventory of every raw artifact discovered by the service.
+# It outlives State replacements and is never reconstructed from a canonical
+# journal. A prior is not retired without an explicit durable drain proof.
+$sourceArtifacts = @{}
+$canonicalStreamHealth = @{}
+$observerWindows = [Collections.Generic.List[object]]::new()
+$kernelWindows = [Collections.Generic.List[object]]::new()
+$networkWindows = [Collections.Generic.List[object]]::new()
 $arbiterVerification = [ordered]@{}
 $arbiterRoot = $null
 $observerFailures = [Collections.Generic.List[string]]::new()
@@ -489,7 +508,8 @@ function New-SymbolState {
         Symbol = $Symbol; Code = $Code; Epoch = 0; Launch = $null
         OutputRoot = $null; Artifact = $null; RequestedSeconds = 0
         RestartAtSeconds = 0.0; ConsecutiveFailures = 0
-        OuterGap = $null; EverReady = $false
+        OuterGap = $null; EverReady = $false; EpochReady = $false
+        LastExitCode = $null; LastExitClean = $null
         # Planned-renewal bookkeeping (Continuous): the successor epoch
         # launches EpochWindowSeconds - overlapS into the epoch while the
         # predecessor keeps both lanes capturing; the symbol's lanes never
@@ -524,6 +544,9 @@ function Start-SymbolEpoch {
     $State.SuccessorScheduled = $false
     $State.PlannedRenewal = $false
     $State.Artifact = $null
+    $State.EpochReady = $false
+    $State.LastExitCode = $null; $State.LastExitClean = $null
+    $State.NeedsArbiterRebind = $false
     # Per-symbol epoch root: <run>/<code>/e<epoch>; the whole <code> root is
     # the oracle artifact root of the symbol across every epoch.
     $State.OutputRoot = Join-Path $runRoot ("{0}\e{1}" -f $State.Code, $State.Epoch)
@@ -565,9 +588,25 @@ function Update-SymbolArtifactAndReadiness {
         if ($roots.Count -eq 1) { $State.Artifact = $roots[0].FullName }
     }
     if ($null -eq $State.Artifact) { return }
+    if (-not $sourceArtifacts.ContainsKey($State.Symbol)) {
+        $sourceArtifacts[$State.Symbol] = [Collections.Generic.List[string]]::new()
+    }
+    if (-not $sourceArtifacts[$State.Symbol].Contains([string]$State.Artifact)) {
+        $sourceArtifacts[$State.Symbol].Add([string]$State.Artifact)
+        $null = Add-ServiceEvent -Channel "SUPERVISOR" -Payload ([ordered]@{
+            event = "RAW_ARTIFACT_DISCOVERED"; symbol = $State.Symbol; epoch = $State.Epoch
+            artifact = Get-ServiceRelativePath -Root $runRoot -FullPath $State.Artifact
+        })
+    }
     $events = Join-Path $State.Artifact "supervisor-events.jsonl"
     $ready = (Test-Path -LiteralPath $events -PathType Leaf) -and
         (Select-String -LiteralPath $events -SimpleMatch '"event":"LANE_READY"' -Quiet -ErrorAction SilentlyContinue)
+    $State.EpochReady = [bool]$ready
+    if ($isContinuous -and $serviceReady -and $ready -and
+        ($null -eq $arbiterStates[$State.Symbol] -or
+         $arbiterStates[$State.Symbol].artifact -cne $State.Artifact)) {
+        $State.NeedsArbiterRebind = $true
+    }
     if ($ready -and -not $State.EverReady) {
         $State.EverReady = $true
         $null = Add-ServiceEvent -Channel "COVERAGE" -Payload ([ordered]@{
@@ -590,6 +629,512 @@ function Update-SymbolArtifactAndReadiness {
     }
 }
 
+function Get-SymbolArtifactInventory {
+    param([Parameter(Mandatory = $true)] [string] $Symbol)
+    if (-not $sourceArtifacts.ContainsKey($Symbol)) { return @() }
+    return @($sourceArtifacts[$Symbol].ToArray())
+}
+
+function Sync-ServiceSourceInventory {
+    # Terminal discovery is bounded to the two owned supervisor hierarchies.
+    # A supervisor that created raw and exited between polls still belongs to
+    # the expected source set; it cannot disappear merely through lost state.
+    foreach ($symbol in @("BTCUSDT", "ETHUSDT")) {
+        $code = $symbol.Substring(0, 1).ToLowerInvariant()
+        $symbolRoot = Join-Path $runRoot $code
+        if (-not (Test-Path -LiteralPath $symbolRoot -PathType Container)) { continue }
+        foreach ($epochRoot in @(Get-ChildItem -LiteralPath $symbolRoot -Directory)) {
+            if ($epochRoot.Name -notmatch '^e([1-9][0-9]*)$') { throw "Unexpected epoch directory under the owned symbol root." }
+            $epochNumber = [int]$Matches[1]
+            $discovered = New-SymbolState -Symbol $symbol -Code $code
+            $discovered.Epoch = $epochNumber
+            $discovered.EverReady = $true # discovery must not fabricate a new first-readiness event
+            $discovered.OutputRoot = $epochRoot.FullName
+            Update-SymbolArtifactAndReadiness -State $discovered
+        }
+    }
+}
+
+function Open-SymbolOuterGap {
+    param([Parameter(Mandatory = $true)] $State, [uint32] $ExitCode)
+    if ($null -ne $State.OuterGap) { return }
+    $State.OuterGap = [pscustomobject]@{
+        gap_id = [uint64]($outerGaps.Count + @($states.Values | Where-Object { $null -ne $_.OuterGap }).Count)
+        opened_elapsed_ticks = [uint64]$origin.ElapsedTicks
+    }
+    $null = Add-ServiceEvent -Channel "COVERAGE" -Payload ([ordered]@{
+        event = "OUTER_GAP_OPENED"; symbol = $State.Symbol; gap_id = $State.OuterGap.gap_id
+        opened_elapsed_ticks = $State.OuterGap.opened_elapsed_ticks; prior_exit_code = $ExitCode
+    })
+}
+
+function Read-CanonicalPublicationTail {
+    param([Parameter(Mandatory = $true)] [string] $Path)
+    # Bounded telemetry, not a verifier: a busy depth stream or late correction
+    # must not masquerade as progress of canonical trades (and vice versa).
+    $result = @{ trades = [uint64]0; depth = [uint64]0; sampled_bytes = 0 }
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return $result }
+    $file = [IO.FileStream]::new($Path, [IO.FileMode]::Open, [IO.FileAccess]::Read,
+        ([IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete))
+    try {
+        $count = [int][Math]::Min([int64]262144, $file.Length)
+        if ($count -eq 0) { return $result }
+        $start = $file.Length - $count
+        $null = $file.Seek($start, [IO.SeekOrigin]::Begin)
+        $bytes = [byte[]]::new($count)
+        $read = 0
+        while ($read -lt $count) {
+            $n = $file.Read($bytes, $read, $count - $read)
+            if ($n -eq 0) { break }
+            $read += $n
+        }
+        $result.sampled_bytes = $read
+        $left = 0
+        if ($start -gt 0) { while ($left -lt $read -and $bytes[$left] -ne 10) { $left++ }; $left++ }
+        $right = $read - 1
+        while ($right -ge $left -and $bytes[$right] -ne 10) { $right-- }
+        if ($right -lt $left) { return $result }
+        $lines = [Text.UTF8Encoding]::new($false, $true).GetString($bytes, $left, $right - $left + 1) -split "`n"
+        for ($i = $lines.Count - 1; $i -ge 0; $i--) {
+            if ($lines[$i] -notmatch '"event"\s*:\s*"(TRADE_OBSERVATION|DEPTH_OBSERVATION)"') { continue }
+            $record = $lines[$i] | ConvertFrom-Json -ErrorAction Stop
+            $payload = $record.body.payload
+            if ($payload.event -ceq "TRADE_OBSERVATION" -and $result.trades -eq 0) { $result.trades = [uint64]$payload.trade_id }
+            if ($payload.event -ceq "DEPTH_OBSERVATION" -and $result.depth -eq 0) { $result.depth = [uint64]$payload.final_sequence }
+            if ($result.trades -ne 0 -and $result.depth -ne 0) { break }
+        }
+        return $result
+    } finally { $file.Dispose() }
+}
+
+function Update-CanonicalStreamHealth {
+    param([Parameter(Mandatory = $true)] $Arbiter, [bool] $ProcessAlive)
+    $sample = Read-CanonicalPublicationTail -Path $Arbiter.journal
+    $now = [double]$origin.Elapsed.TotalSeconds
+    foreach ($stream in @("trades", "depth")) {
+        $key = "$($Arbiter.symbol):$stream"
+        if (-not $canonicalStreamHealth.ContainsKey($key)) {
+            $canonicalStreamHealth[$key] = @{ id = [uint64]0; lastProgress = $now; stalled = $false; incident = 0 }
+        }
+        $health = $canonicalStreamHealth[$key]
+        $advanced = [uint64]$sample[$stream] -gt [uint64]$health.id
+        if ($advanced) {
+            $health.id = [uint64]$sample[$stream]; $health.lastProgress = $now; $health.stalled = $false
+        }
+        $stale = $now - [double]$health.lastProgress
+        $limit = [Math]::Max(60, 2 * [double]$TelemetryIntervalSeconds)
+        $status = if (-not $ProcessAlive) { "PROCESS_EXITED" }
+            elseif ($stale -ge $limit) { "NO_RECENT_PUBLICATION" }
+            elseif ($advanced) { "PUBLISHING" } else { "AWAITING_PROGRESS" }
+        if ($status -ceq "NO_RECENT_PUBLICATION" -and -not $health.stalled) {
+            $health.stalled = $true; $health.incident = [int]$health.incident + 1
+            Add-ObserverFailure -Kind ("LIVE_ARBITRATION_{0}_{1}" -f $Arbiter.symbol, $stream) `
+                -Epoch $Arbiter.sequence -Detail ("NO_RECENT_PUBLICATION_{0}" -f $health.incident)
+        }
+        $null = Add-ServiceEvent -Channel "OBSERVER" -Payload ([ordered]@{
+            event = "CANONICAL_STREAM_HEALTH"; symbol = $Arbiter.symbol; segment = $Arbiter.sequence
+            stream = $stream; status = $status; last_publication_id = [uint64]$health.id
+            published_since_previous_sample = $advanced; seconds_without_observed_progress = $stale
+            sampled_tail_bytes = $sample.sampled_bytes; process_alive = $ProcessAlive
+            scope = "BOUNDED_PUBLICATION_SAMPLE_NOT_RAW_COMPLETENESS_OR_REALTIME_FRESHNESS"
+        })
+    }
+}
+
+function Add-ObserverFailure {
+    param([string] $Kind, [int] $Epoch, [string] $Detail)
+    $key = "${Kind}:${Epoch}:${Detail}"
+    if (-not $observerFailures.Contains($key)) {
+        $observerFailures.Add($key)
+        $null = Add-ServiceEvent -Channel "OBSERVER" -Payload ([ordered]@{
+            event = "OBSERVER_FAILED"; observer = $Kind; epoch = $Epoch; detail = $Detail; failure_id = $key
+        })
+    }
+}
+
+function Get-SuccessorTransitionEvidence {
+    param([Parameter(Mandatory = $true)] $Predecessor, [Parameter(Mandatory = $true)] $Successor)
+    return [ordered]@{
+        predecessor_clean = ($Predecessor.LastExitClean -eq $true)
+        no_outer_gap = ($Successor.EpochReady -and $null -eq $Predecessor.OuterGap -and $null -eq $Successor.OuterGap)
+    }
+}
+
+function Test-ObserverKernelOwnership {
+    param([Parameter(Mandatory = $true)] $Window)
+    if (-not (Test-Path -LiteralPath $Window.kernelOut -PathType Leaf)) { return $false }
+    try {
+        $first = @(Get-Content -LiteralPath $Window.kernelOut -TotalCount 1 -ErrorAction Stop)
+        if ($first.Count -ne 1) { return $false }
+        $ready = $first[0] | ConvertFrom-Json -ErrorAction Stop
+        return $ready.schema -ceq "KernelNetworkTraceReadyV1" -and $ready.status -ceq "READY" -and
+            $ready.session_name -ceq $Window.session -and
+            [IO.Path]::GetFullPath([string]$ready.etl_path).Equals([IO.Path]::GetFullPath($Window.etl), [StringComparison]::OrdinalIgnoreCase) -and
+            [IO.Path]::GetFullPath([string]$ready.stop_file).Equals([IO.Path]::GetFullPath($Window.kernelStop), [StringComparison]::OrdinalIgnoreCase)
+    } catch { return $false }
+}
+
+function Invoke-ServiceLogman {
+    param([Parameter(Mandatory = $true)] [string[]] $Arguments)
+    $output = [string[]]@(& $logman @Arguments 2>&1 | ForEach-Object { [string]$_ })
+    return [ordered]@{ exit_code = [int]$LASTEXITCODE; output = $output }
+}
+
+function Stop-OwnedKernelSession {
+    param([Parameter(Mandatory = $true)] $Window, [string] $Reason, [bool] $RecordServiceEvent = $true)
+    if ($Window.cleanupStatus -ceq "ABSENT") { return }
+    $Window.cleanupAttempts = [int]$Window.cleanupAttempts + 1
+    $owned = Test-ObserverKernelOwnership -Window $Window
+    $stopResult = $null; $queryResult = $null
+    $status = "OWNERSHIP_UNPROVEN"
+    if ($owned) {
+        try {
+            $stopResult = Invoke-ServiceLogman -Arguments ([string[]]@("stop", "-ets", $Window.session))
+            $queryResult = Invoke-ServiceLogman -Arguments ([string[]]@("query", "-ets", $Window.session))
+            # PLA_E_DCS_NOT_FOUND is the observed Windows logman not-found
+            # HRESULT. Access denied or any other error does not prove absence.
+            $notFound = [int]-2144337918
+            $status = if (($stopResult.exit_code -eq 0 -or $stopResult.exit_code -eq $notFound) -and
+                $queryResult.exit_code -eq $notFound) { "ABSENT" } else { "CONTROL_FAILED" }
+        } catch {
+            $status = "CONTROL_FAILED"
+            $queryResult = [ordered]@{ exit_code = $null; output = @([string]$_) }
+        }
+    }
+    $Window.cleanupStatus = $status
+    $record = [ordered]@{
+        schema = "OwnedKernelSessionCleanupV1"; epoch = $Window.epoch; reason = $Reason
+        observed_wall_ns = [uint64](Get-RawQualificationWallNs); controller_pid = $Window.kernelPid
+        session_name = $Window.session; etl_path = $Window.etl; stop_file = $Window.kernelStop
+        exact_ready_ownership = $owned; stop = $stopResult; post_query = $queryResult; status = $status
+    }
+    # Kernel verifier requires its exact six files. Control-plane evidence
+    # belongs to the surrounding observer window, not inside that artifact.
+    $path = Join-Path $Window.root ("kernel-cleanup-{0:0000}.json" -f $Window.cleanupAttempts)
+    $null = Write-RawQualificationDurableNewJson -Path $path -Value $record
+    if ($status -cne "ABSENT" -and $RecordServiceEvent) {
+        Add-ObserverFailure -Kind "KERNEL_SESSION_CLEANUP" -Epoch $Window.epoch -Detail $status
+    }
+}
+
+function Start-ServiceObserverWindow {
+    # Unique owned roots/sessions. Both processes start without blocking the
+    # service; Update-ServiceObserverWindows observes readiness on later ticks.
+    $epoch = $observerWindows.Count + 1
+    $windowNonce = [Guid]::NewGuid().ToString("N").Substring(0, 12)
+    $root = Join-Path $observerRoot ("epochs/{0:000000}" -f $epoch)
+    $kernel = Join-Path $root "kernel"
+    $network = Join-Path $root "network"
+    New-Item -ItemType Directory -Path $kernel -Force | Out-Null
+    $window = [pscustomobject]@{
+        epoch = $epoch; root = $root; kernelRoot = $kernel; networkRoot = $network
+        identity = "observed-$windowNonce"; session = "BinanceProduction_$windowNonce"
+        started = [uint64](Get-RawQualificationWallNs); ready = [uint64]0
+        stop = [uint64]0; kernelTerminal = [uint64]0; networkTerminal = [uint64]0
+        clock = [Diagnostics.Stopwatch]::StartNew(); stopClock = $null
+        kernel = $null; network = $null; kernelPid = [uint32]0
+        kernelExit = $null; networkExit = $null
+        kernelForced = $false; cleanupAttempts = 0; cleanupStatus = "NOT_ATTEMPTED"
+        kernelStop = (Join-Path $kernel "stop.request"); networkStop = (Join-Path $network "stop.request")
+        kernelOut = (Join-Path $kernel "controller.stdout.jsonl"); kernelErr = (Join-Path $kernel "controller.stderr.txt")
+        networkOut = (Join-Path $root "network.stdout.txt"); networkErr = (Join-Path $root "network.stderr.txt")
+        etl = (Join-Path $kernel "kernel-network.etl")
+    }
+    # Register before spawning so even a partially failed start is owned by
+    # cleanup. Never query/stop a session not created by this invocation.
+    $observerWindows.Add($window)
+    $window.kernel = [RawQualificationNative]::StartSuspendedInJobRetained(
+        $job, $kernelTrace, ([string[]]@($window.session, $window.etl, $window.kernelStop,
+            [string]$KernelTraceMiB, [string]$etwDeadline)), $repo, $window.kernelOut, $window.kernelErr)
+    $window.kernelPid = [uint32]$window.kernel.ProcessId
+    $window.network = [RawQualificationNative]::StartSuspendedInJobRetained(
+        $job, $powershell, ([string[]]@("-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+            "-File", $networkWitnessScript, "-EvidenceRoot", $network, "-ObservationId", $window.identity,
+            "-DurationSeconds", [string]$etwDeadline, "-IntervalSeconds", "30",
+            "-ProbeTimeoutMilliseconds", "2000", "-StopFile", $window.networkStop)),
+        $repo, $window.networkOut, $window.networkErr)
+}
+
+function Stop-ServiceObserverWindow {
+    param([Parameter(Mandatory = $true)] $Window)
+    if ($Window.stop -ne 0) { return }
+    $Window.stop = [uint64](Get-RawQualificationWallNs)
+    $Window.stopClock = [Diagnostics.Stopwatch]::StartNew()
+    foreach ($kind in @("kernel_network", "network_witness")) {
+        $null = Add-ServiceEvent -Channel "OBSERVER" -Payload ([ordered]@{
+            event = "OBSERVER_WINDOW_STOP_REQUESTED"; kind = $kind; epoch = $Window.epoch
+            stop_requested_wall_ns = $Window.stop
+        })
+    }
+    foreach ($path in @($Window.kernelStop, $Window.networkStop)) {
+        if (-not (Test-Path -LiteralPath $path)) {
+            $null = Write-RawQualificationDurableNewFile -Path $path -Bytes ([byte[]]@())
+        }
+    }
+}
+
+function Update-ServiceObserverWindows {
+    param([switch] $NoRotation)
+    if ($observerSkipped) { return }
+    foreach ($window in @($observerWindows)) {
+        foreach ($kind in @("kernel", "network")) {
+            $launch = $window.$kind
+            if ($null -eq $launch) { continue }
+            $exited = [RawQualificationNative]::WaitForProcessExit($launch.ProcessHandle, 0)
+            if (-not $exited -and $window.stop -ne 0 -and $window.stopClock.Elapsed.TotalSeconds -ge 30) {
+                Add-ObserverFailure -Kind $kind -Epoch $window.epoch -Detail "STOP_DEADLINE_EXCEEDED"
+                if ($kind -ceq "kernel") { $window.kernelForced = $true }
+                $null = [RawQualificationNative]::TerminateProcessHandle($launch.ProcessHandle, 0xEE21)
+                $exited = [RawQualificationNative]::WaitForProcessExit($launch.ProcessHandle, 0)
+            }
+            if ($exited) {
+                $window.("${kind}Terminal") = [uint64](Get-RawQualificationWallNs)
+                $window.("${kind}Exit") = [uint32][RawQualificationNative]::GetProcessExitCode($launch.ProcessHandle)
+                if ($window.stop -eq 0) {
+                    Add-ObserverFailure -Kind $kind -Epoch $window.epoch -Detail "EXITED_BEFORE_STOP_REQUEST"
+                }
+                $null = [RawQualificationNative]::CloseRetainedProcessHandle($launch)
+                $window.$kind = $null
+                if ($kind -ceq "kernel" -and ($window.stop -eq 0 -or $window.kernelForced)) {
+                    Stop-OwnedKernelSession -Window $window -Reason "CONTROLLER_EXITED_WITHOUT_PROVEN_SEAL"
+                }
+            }
+        }
+        if ($window.ready -eq 0) {
+            if ($window.kernelTerminal -ne 0 -or $window.networkTerminal -ne 0) {
+                throw "Observer window $($window.epoch) exited before readiness; failed evidence preserved."
+            }
+            $kernelReady = $false; $networkReady = $false
+            $kernelReady = Test-ObserverKernelOwnership -Window $window
+            $startup = Join-Path $window.networkRoot "network-witness-startup.json"
+            if (Test-Path -LiteralPath $startup -PathType Leaf) {
+                try {
+                    $value = Get-Content -LiteralPath $startup -Raw | ConvertFrom-Json -ErrorAction Stop
+                    $networkReady = $value.schema -ceq "RawQualificationNetworkWitnessStartupV2" -and
+                        $value.observation_id -ceq $window.identity
+                } catch {}
+            }
+            if ($kernelReady -and $networkReady) {
+                $window.ready = [uint64](Get-RawQualificationWallNs)
+                foreach ($kind in @("kernel_network", "network_witness")) {
+                    $artifact = if ($kind -ceq "kernel_network") { $window.kernelRoot } else { $window.networkRoot }
+                    $null = Add-ServiceEvent -Channel "OBSERVER" -Payload ([ordered]@{
+                        event = "OBSERVER_WINDOW_READY"; kind = $kind; epoch = $window.epoch
+                        artifact_root = Get-ServiceRelativePath -Root $runRoot -FullPath $artifact
+                        started_wall_ns = $window.started; ready_wall_ns = $window.ready
+                    })
+                }
+                # The successor is ready on both planes before the predecessor
+                # receives either stop file. Readiness is never inherited.
+                foreach ($previous in @($observerWindows | Where-Object {
+                    $_.epoch -lt $window.epoch -and $_.stop -eq 0
+                })) { Stop-ServiceObserverWindow -Window $previous }
+            } elseif ($window.clock.Elapsed.TotalSeconds -ge 60) {
+                Add-ObserverFailure -Kind "PAIR" -Epoch $window.epoch -Detail "READINESS_DEADLINE_EXCEEDED"
+                throw "Observer pair did not publish both readiness records within 60 seconds."
+            }
+        }
+    }
+    if ($NoRotation) { return }
+    $active = @($observerWindows | Where-Object { $_.stop -eq 0 })
+    $retiring = @($observerWindows | Where-Object {
+        $_.stop -ne 0 -and ($null -ne $_.kernel -or $null -ne $_.network)
+    })
+    if ($active.Count -eq 1 -and $active[0].ready -ne 0 -and $retiring.Count -eq 0) {
+        $current = $active[0]
+        if (($isContinuous -and $current.clock.Elapsed.TotalSeconds -ge $EpochWindowSeconds) -or
+            $current.kernelTerminal -ne 0 -or $current.networkTerminal -ne 0) {
+            Start-ServiceObserverWindow
+        }
+    }
+}
+
+function Complete-ServiceObserverReports {
+    # Decoding and hashing are deliberately outside the capture loop. All
+    # retired process handles were already closed; no live windows accumulate.
+    foreach ($window in $observerWindows) {
+        if ($window.ready -eq 0 -or $window.stop -eq 0 -or
+            $window.kernelTerminal -eq 0 -or $window.networkTerminal -eq 0 -or
+            $window.kernelExit -ne 0 -or $window.networkExit -ne 0) {
+            throw "Observer window $($window.epoch) did not finish a complete cooperative lifetime."
+        }
+        if ((Get-Item -LiteralPath $window.kernelErr).Length -ne 0 -or
+            (Get-Item -LiteralPath $window.networkErr).Length -ne 0) { throw "Observer window wrote unexpected stderr." }
+        Stop-OwnedKernelSession -Window $window -Reason "FINAL_SEAL_CONFIRMATION"
+        if ($window.cleanupStatus -cne "ABSENT") { throw "Owned kernel session absence could not be confirmed." }
+        $decoded = Join-Path $window.kernelRoot "kernel-network.xml"
+        $decodeOutput = [string[]]@(& $tracerpt $window.etl -o $decoded -of XML -lr -y 2>&1 | ForEach-Object { [string]$_ })
+        $decodeExit = [int]$LASTEXITCODE
+        if ($decodeExit -ne 0) { throw "tracerpt rejected observer window $($window.epoch)." }
+        $queryOutput = [string[]]@(& $logman query -ets $window.session 2>&1 | ForEach-Object { [string]$_ })
+        $queryExit = [int]$LASTEXITCODE
+        if ($queryExit -ne -2144337918) { throw "Owned kernel session absence was not confirmed after seal (query $queryExit)." }
+        $records = [object[]]@(Get-Content -LiteralPath $window.kernelOut | ForEach-Object { $_ | ConvertFrom-Json -ErrorAction Stop })
+        if ($records.Count -ne 2 -or $records[1].stop_reason -cne "STOP_FILE") {
+            throw "Observer kernel window did not seal READY then STOP_FILE."
+        }
+        $windowStart = Convert-ServiceWallNsToUtc $window.started
+        $windowEnd = Convert-ServiceWallNsToUtc $window.kernelTerminal
+        $inventory = [object[]]@($processIntervals | Where-Object {
+            $_.role -cne "LIVE_ARBITRATION" -and
+            $_.interval_start_utc -lt $windowEnd -and $_.interval_end_utc -gt $windowStart
+        } | ForEach-Object {
+            $left = if ($_.interval_start_utc -gt $windowStart) { $_.interval_start_utc } else { $windowStart }
+            $right = if ($_.interval_end_utc -lt $windowEnd) { $_.interval_end_utc } else { $windowEnd }
+            [ordered]@{ role = [string]$_.role; symbol = $_.symbol; pid = [uint32]$_.pid
+                interval_start_utc = ([DateTimeOffset]$left).ToUniversalTime().ToString("o")
+                interval_end_utc = ([DateTimeOffset]$right).ToUniversalTime().ToString("o") }
+        })
+        $report = [ordered]@{
+            schema = "KernelNetworkProductionCaptureV1"; run_id = $window.identity; status = "CANDIDATE"
+            started_utc = $windowStart.ToString("o"); completed_utc = $windowEnd.ToString("o")
+            controller_executable = $kernelTrace; controller_sha256 = Get-RawQualificationSha256File -Path $kernelTrace
+            controller_pid = $window.kernelPid; session_name = $window.session
+            controller_exit_code = [int]$window.kernelExit; controller_records = $records
+            controller_stderr_file = "controller.stderr.txt"; controller_stderr_bytes = [uint64](Get-Item -LiteralPath $window.kernelErr).Length
+            controller_stderr_sha256 = Get-RawQualificationSha256File -Path $window.kernelErr
+            maximum_file_mib = [uint32]$KernelTraceMiB; deadline_s = [uint64]$etwDeadline
+            etl_file = "kernel-network.etl"; etl_bytes = [uint64](Get-Item -LiteralPath $window.etl).Length
+            etl_sha256 = Get-RawQualificationSha256File -Path $window.etl
+            decoded_file = "kernel-network.xml"; decoded_bytes = [uint64](Get-Item -LiteralPath $decoded).Length
+            decoded_sha256 = Get-RawQualificationSha256File -Path $decoded
+            tracerpt_exit_code = $decodeExit; tracerpt_output = $decodeOutput
+            orphan_query_exit_code = $queryExit; orphan_query_output = $queryOutput
+            monitored_processes = $inventory; selected_event_ids = [uint16[]]@(12,13,14,15,16,17,28,29,30,31,32)
+            raw_packet_payload_capture = $false; diagnostic_only = $true; training_eligible = $false
+            correlation_status = "OPEN_PENDING_INDEPENDENT_VERIFY"
+        }
+        $null = Write-RawQualificationDurableNewJson -Path (Join-Path $window.kernelRoot "kernel-network-capture.json") -Value $report
+        $reportRoot = Join-Path $verificationRoot ("observers/{0:000000}" -f $window.epoch)
+        New-Item -ItemType Directory -Path $reportRoot -Force | Out-Null
+        foreach ($kind in @("kernel_network", "network_witness")) {
+            $isKernel = $kind -ceq "kernel_network"
+            $artifact = if ($isKernel) { $window.kernelRoot } else { $window.networkRoot }
+            $reportPath = Join-Path $reportRoot $(if ($isKernel) { "kernel.json" } else { "network.json" })
+            $module = if ($isKernel) { "binance_lob.kernel_network_production_verify_cli" } else { "binance_lob.network_witness_verify_cli" }
+            $null = Invoke-JsonVerifier -Module $module -InputRoot $artifact -OutputPath $reportPath
+            $entry = [ordered]@{
+                epoch = $window.epoch; artifact_root = Get-ServiceRelativePath -Root $runRoot -FullPath $artifact
+                started_wall_ns = $window.started; ready_wall_ns = $window.ready; stop_requested_wall_ns = $window.stop
+                terminal_wall_ns = $(if ($isKernel) { $window.kernelTerminal } else { $window.networkTerminal })
+                verification_path = Get-ServiceRelativePath -Root $runRoot -FullPath $reportPath
+                verification_sha256 = Get-RawQualificationSha256File -Path $reportPath
+            }
+            if ($isKernel) { $entry.run_id = $window.identity; $kernelWindows.Add($entry) }
+            else { $entry.observation_id = $window.identity; $networkWindows.Add($entry) }
+            $null = Add-ServiceEvent -Channel "OBSERVER" -Payload ([ordered]@{
+                event = "OBSERVER_WINDOW_SEALED"; kind = $kind; epoch = $window.epoch
+                terminal_wall_ns = $entry.terminal_wall_ns; verification_path = $entry.verification_path
+                verification_sha256 = $entry.verification_sha256
+            })
+        }
+    }
+}
+
+function Write-ArbiterExpectedArtifactInventory {
+    param(
+        [Parameter(Mandatory = $true)] [string] $OutputPath,
+        [Parameter(Mandatory = $true)] [string[]] $Artifacts,
+        [Parameter(Mandatory = $true)] [string[]] $Journals
+    )
+    $value = [ordered]@{
+        schema = "LiveArbitrationExpectedArtifactsV1"
+        artifacts = [string[]]@($Artifacts | Select-Object -Unique)
+        journals = [object[]]@($Journals | ForEach-Object {
+            [ordered]@{ path = [string]$_; sha256 = Get-RawQualificationSha256File -Path $_ }
+        })
+    }
+    $null = Write-RawQualificationDurableNewJson -Path $OutputPath -Value $value
+    return $OutputPath
+}
+
+function Get-ArbiterClosedJournalPrefix {
+    param([Parameter(Mandatory = $true)] $Arbiter)
+    $paths = [string[]]@(Get-ChildItem -LiteralPath $Arbiter.dir -Filter "*.jsonl" -File |
+        ForEach-Object { $_.FullName })
+    [Array]::Sort($paths, [StringComparer]::Ordinal)
+    $cut = [Array]::IndexOf($paths, [string]$Arbiter.journal)
+    if ($cut -lt 0) { throw "Closed canonical segment is absent from its journal directory." }
+    # Preserve STARTED and every resume predecessor as identity context.
+    # Files after this immutable cut are deliberately not selected.
+    return [string[]]@($paths[0..$cut])
+}
+
+function Get-LivePrefixAuditArguments {
+    param(
+        [Parameter(Mandatory = $true)] [string] $JournalRoot,
+        [Parameter(Mandatory = $true)] [string] $ArtifactRoot,
+        [string] $OracleCache = ""
+    )
+    # Live audits need STARTED and all resume predecessors for identity context.
+    # The last journal is mutable, so it cannot be bound by a sealed manifest.
+    $auditArgs = [System.Collections.Generic.List[string]]::new()
+    $auditArgs.AddRange([string[]]@(
+        "--journal-root", $JournalRoot, "--incremental", "--oracle-artifact", $ArtifactRoot
+    ))
+    if ($OracleCache -ne "") {
+        $auditArgs.Add("--oracle-cache")
+        $auditArgs.Add($OracleCache)
+    }
+    return [string[]]$auditArgs.ToArray()
+}
+
+function Get-LivePrefixAuditResult {
+    param(
+        [Parameter(Mandatory = $true)] [uint32] $ExitCode,
+        [Parameter(Mandatory = $true)] [string] $ReportPath
+    )
+    if ($ExitCode -ne 0) { return "FAIL" }
+    try {
+        $report = Get-Content -LiteralPath $ReportPath -Raw | ConvertFrom-Json -ErrorAction Stop
+        if ($report.schema -cne "LiveArbitrationVerificationV2" -or $report.status -cne "PASS" -or
+            $report.audit_scope -cne "LIVE_PREFIX" -or $report.journal_prefix -isnot [bool] -or
+            $report.journal_prefix -or $report.coverage_exhaustive -isnot [bool] -or
+            $report.coverage_exhaustive) { return "FAIL" }
+        if ($report.oracle_identity -ceq "PASS") { return "PASS" }
+        if ($report.oracle_identity -ceq "SKIPPED") { return "UNPROVEN" }
+    } catch {}
+    return "FAIL"
+}
+
+function Test-ArbiterCompleteTerminal {
+    param([Parameter(Mandatory = $true)] [string] $Path)
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return $false }
+    $stream = [IO.FileStream]::new($Path, [IO.FileMode]::Open, [IO.FileAccess]::Read,
+        ([IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete))
+    try {
+        if ($stream.Length -eq 0) { return $false }
+        $start = [Math]::Max([int64]0, $stream.Length - 65536)
+        $null = $stream.Seek($start, [IO.SeekOrigin]::Begin)
+        $reader = [IO.StreamReader]::new($stream, [Text.UTF8Encoding]::new($false), $false, 4096, $true)
+        try {
+            $tail = $reader.ReadToEnd()
+            if (-not $tail.EndsWith("`n")) { return $false }
+            $lines = @($tail.TrimEnd("`r", "`n") -split "`n")
+            $record = $lines[-1] | ConvertFrom-Json -ErrorAction Stop
+            return $record.body.payload.event -ceq "ARBITRATION_TERMINAL" -and
+                $record.body.payload.status -ceq "COMPLETE"
+        } catch { return $false }
+        finally { $reader.Dispose() }
+    } finally { $stream.Dispose() }
+}
+
+function Get-NextLiveArbiterSequence {
+    param([Parameter(Mandatory = $true)][string] $SymbolDir)
+    # Count is not an index. A missing journal (0000 and 0002, no 0001)
+    # makes Count collide with an existing create-only stdout and the
+    # relaunch exception aborts raw capture. The next sequence is one past
+    # every journal and log already preserved.
+    $max = -1
+    foreach ($file in @(Get-ChildItem -LiteralPath $SymbolDir -File -ErrorAction SilentlyContinue)) {
+        if ($file.Name -match '^(?:.*-)?seg-(\d+)\.(?:jsonl|stdout\.txt|stderr\.txt)$') {
+            $index = [int]$Matches[1]
+            if ($index -gt $max) { $max = $index }
+        }
+    }
+    return ($max + 1)
+}
+
 function Start-LiveArbiter {
     param(
         [Parameter(Mandatory = $true)] $State,
@@ -605,12 +1150,18 @@ function Start-LiveArbiter {
     # the durable trade identity log, so restarts and rebinds can never
     # duplicate, roll back or degrade a post-publish conflict to `unknown`.
     $symbolName = $State.Symbol
+    # The service's independently discovered inventory survives both a dead
+    # supervisor and a dead arbiter. Resume does not inherit prior-artifact
+    # arguments from previous journal segments.
+    # Collect the first operand before adding: a function with one emitted
+    # source otherwise becomes string + array and concatenates whole paths.
+    $requiredArtifacts = [string[]]@(@(Get-SymbolArtifactInventory -Symbol $symbolName) + @($ArtifactRoot) + @($PriorArtifacts) | Select-Object -Unique)
+    $PriorArtifacts = [string[]]@($requiredArtifacts | Where-Object { $_ -cne $ArtifactRoot })
     $symbolDir = Join-Path $arbiterRoot $symbolName
     if (-not (Test-Path -LiteralPath $symbolDir -PathType Container)) {
         New-Item -ItemType Directory -Path $symbolDir | Out-Null
     }
-    $existingSegments = @(Get-ChildItem -LiteralPath $symbolDir -Filter "*-seg-*.jsonl" -File -ErrorAction SilentlyContinue)
-    $sequence = $existingSegments.Count
+    $sequence = Get-NextLiveArbiterSequence -SymbolDir $symbolDir
     $arbJournal = Join-Path $symbolDir ("{0}-seg-{1:0000}.jsonl" -f $symbolName, $sequence)
     $identity = Join-Path $symbolDir "trade-identity.bin"
     $stopFile = Join-Path $symbolDir "stop.request"
@@ -655,7 +1206,16 @@ function Start-LiveArbiter {
         # the hung-auditor timeout could never fire because the tracking
         # state was replaced at every renewal).
         if (-not [RawQualificationNative]::WaitForProcessExit($previous.auditLaunch.ProcessHandle, 0)) {
-            $null = [RawQualificationNative]::TerminateProcessHandle($previous.auditLaunch.ProcessHandle, 0xEE45)
+            try {
+                $null = [RawQualificationNative]::TerminateProcessHandle($previous.auditLaunch.ProcessHandle, 0xEE45)
+            } catch {
+                # The auditor can exit between the zero-wait and TerminateProcess.
+                # That race is not a dead auditor. A process that is still
+                # alive after the failure is.
+                if (-not [RawQualificationNative]::WaitForProcessExit($previous.auditLaunch.ProcessHandle, 0)) {
+                    throw
+                }
+            }
             $null = [RawQualificationNative]::WaitForProcessExit($previous.auditLaunch.ProcessHandle, 10000)
         }
         $null = [RawQualificationNative]::CloseRetainedProcessHandle($previous.auditLaunch)
@@ -671,6 +1231,7 @@ function Start-LiveArbiter {
         dir = $symbolDir; stderr = $arbStderr; stdout = $arbStdout
         pid = [uint32]$arbiterLaunch.ProcessId
         artifact = $ArtifactRoot; sequence = $sequence
+        sourceArtifacts = [string[]]@($requiredArtifacts)
         # Semantic health state (initialized up front: StrictMode rejects
         # reads of properties that were never created).
         lastAuditedSize = $null; lastPrefixAudit = $null
@@ -718,10 +1279,8 @@ function Stop-LiveArbiter {
             $null = Write-RawQualificationDurableNewFile -Path $stopFile -Bytes ([byte[]]@())
         }
         if (-not [RawQualificationNative]::WaitForProcessExit($Arbiter.launch.ProcessHandle, 60000)) {
-            $null = Add-ServiceEvent -Channel "OBSERVER" -Payload ([ordered]@{
-                event = "OBSERVER_FAILED"; observer = "LIVE_ARBITRATION"; symbol = $Arbiter.symbol
-                detail = "sidecar exceeded the cooperative stop deadline and was terminated"
-            })
+            Add-ObserverFailure -Kind ("LIVE_ARBITRATION_{0}" -f $Arbiter.symbol) `
+                -Epoch $Arbiter.sequence -Detail "STOP_DEADLINE_EXCEEDED"
             $null = [RawQualificationNative]::TerminateProcessHandle($Arbiter.launch.ProcessHandle, $KillExitCode)
             $null = [RawQualificationNative]::WaitForProcessExit($Arbiter.launch.ProcessHandle, 30000)
         }
@@ -750,10 +1309,12 @@ function Rebind-LiveArbiter {
     # journal chain + durable identity while walking the prior artifact's
     # generations as they seal.  Raw capture never stops on either side.
     $arb = $arbiterStates[$State.Symbol]
+    $State.NeedsArbiterRebind = $false
     $priorArtifacts = @()
     if ($null -ne $arb) {
         $exit = Stop-LiveArbiter -Arbiter $arb -RebindStop
         $priorArtifacts += [string]$arb.artifact
+        $complete = $exit -eq 0 -and (Test-ArbiterCompleteTerminal -Path $arb.journal)
         # One sealed segment produces exactly one bounded verification task
         # (a rebind can be triggered twice â€” promotion + readiness â€” while
         # the segment was already queued).  The oracle root is the SYMBOL
@@ -764,14 +1325,28 @@ function Rebind-LiveArbiter {
         $duplicate = @($pendingSegmentVerifications | Where-Object {
             $_.symbol -ceq $State.Symbol -and $_.sequence -eq $arb.sequence -and $_.journal -ceq $arb.journal
         })
-        if ($duplicate.Count -eq 0) {
+        if ($complete -and $duplicate.Count -eq 0) {
+            $expectedPath = Join-Path $verificationRoot ("{0}-seg-{1:0000}-expected.json" -f $State.Code, $arb.sequence)
+            $expected = Write-ArbiterExpectedArtifactInventory -OutputPath $expectedPath -Artifacts $arb.sourceArtifacts `
+                -Journals (Get-ArbiterClosedJournalPrefix -Arbiter $arb)
             $pendingSegmentVerifications.Add([pscustomobject]@{
                 symbol = $State.Symbol; journal = $arb.journal; dir = $arb.dir
                 artifact = $symbolRoot; sequence = $arb.sequence
+                expectedInventory = $expected
             })
         }
+        if (-not $complete) {
+            $failureKey = "LIVE_ARBITRATION_SEGMENT_INTERRUPTED:$($State.Symbol):$($arb.sequence)"
+            if (-not $observerFailures.Contains($failureKey)) {
+                $observerFailures.Add($failureKey)
+                $null = Add-ServiceEvent -Channel "OBSERVER" -Payload ([ordered]@{
+                    event = "OBSERVER_FAILED"; observer = "LIVE_ARBITRATION"; symbol = $State.Symbol
+                    detail = "segment interrupted before a complete terminal"; failure_id = $failureKey
+                })
+            }
+        }
         $null = Add-ServiceEvent -Channel "SERVICE" -Payload ([ordered]@{
-            event = "LIVE_ARBITRATION_SEGMENT_SEALED"; symbol = $State.Symbol
+            event = $(if ($complete) { "LIVE_ARBITRATION_SEGMENT_SEALED" } else { "LIVE_ARBITRATION_SEGMENT_INTERRUPTED" }); symbol = $State.Symbol
             journal = Get-ServiceRelativePath -Root $runRoot -FullPath $arb.journal
             exit_code = $exit; rebind = $true
         })
@@ -785,8 +1360,15 @@ function Rebind-LiveArbiter {
 # monotonic deadlines: a hung/slow evaluator never blocks the service loop,
 # its stderr is preserved, and the milestones only count verified windows.
 $verificationTasks = [Collections.Generic.List[object]]::new()
+$pendingEpochVerifications = [Collections.Generic.List[object]]::new()
+$maximumConcurrentWindowVerifiers = 2
 
 function Start-EpochVerificationTask {
+    param([Parameter(Mandatory = $true)] $Artifact, [int] $Epoch)
+    $pendingEpochVerifications.Add([pscustomobject]@{ artifact = $Artifact; epoch = $Epoch })
+}
+
+function Start-QueuedEpochVerificationTask {
     param([Parameter(Mandatory = $true)] $Artifact, [int] $Epoch)
     $symbolCode = ($Artifact.symbol.Substring(0, 1)).ToLowerInvariant()
     $base = "$symbolCode$Epoch"
@@ -815,19 +1397,19 @@ function Start-SegmentVerificationTask {
     $rustReport = Join-Path $verificationRoot "$base-rust.json"
     $pythonReport = Join-Path $verificationRoot "$base-python.json"
     $stderr = Join-Path $verificationRoot "$base-rust.stderr.txt"
-    # Bounded per-epoch verification (ADR-17 B2): ONE sealed resume segment
-    # audited against the chain context declared in its own
-    # ARBITRATION_RESUMED record and the epoch's own raw artifact â€” never
-    # the whole service history (the full structural set audit runs once at
-    # the service terminal).
+    # Immutable prefix cut: include prior identity context for late duplicate
+    # corrections, but never journals created after this segment closed.
     $launch = [RawQualificationNative]::StartSuspendedInJobRetained(
         $job, $liveArbiterVerify,
-        ([string[]]@($Entry.journal, "--tail-segment-only", "--oracle-artifact", $Entry.artifact)),
+        ([string[]]@("--journal-root", $Entry.dir, "--journal-prefix", "--oracle-artifact", $Entry.artifact,
+            "--expected-artifact-inventory", $Entry.expectedInventory,
+            "--oracle-cache", (Join-Path $verificationRoot "oracle-cache\rust"))),
         $repo, (Join-Path $verificationRoot "$base-rust.stdout.txt"), $stderr
     )
     $verificationTasks.Add([pscustomobject]@{
         kind = "segment"; symbol = $Entry.symbol; sequence = $Entry.sequence
-        journal = $Entry.journal; artifact = $Entry.artifact
+        journal = $Entry.journal; dir = $Entry.dir; artifact = $Entry.artifact
+        expectedInventory = $Entry.expectedInventory
         stage = "rust"; launch = $launch; stopwatch = [Diagnostics.Stopwatch]::StartNew()
         rustReport = $rustReport; rustStdout = (Join-Path $verificationRoot "$base-rust.stdout.txt")
         pythonReport = $pythonReport; stderr = $stderr
@@ -837,8 +1419,16 @@ function Start-SegmentVerificationTask {
 }
 
 function Process-VerificationTasks {
-    # Sealed canonical segments queue bounded per-epoch verification tasks.
-    while ($pendingSegmentVerifications.Count -gt 0) {
+    # A backlog is explicit; never fan out every expensive raw oracle at once.
+    # Deadlines begin at actual process launch, not while waiting in the queue.
+    while ($pendingEpochVerifications.Count -gt 0 -and
+        @($verificationTasks | Where-Object { $null -ne $_.launch }).Count -lt $maximumConcurrentWindowVerifiers) {
+        $entry = $pendingEpochVerifications[0]
+        $pendingEpochVerifications.RemoveAt(0)
+        Start-QueuedEpochVerificationTask -Artifact $entry.artifact -Epoch $entry.epoch
+    }
+    while ($pendingSegmentVerifications.Count -gt 0 -and
+        @($verificationTasks | Where-Object { $null -ne $_.launch }).Count -lt $maximumConcurrentWindowVerifiers) {
         $entry = $pendingSegmentVerifications[0]
         $pendingSegmentVerifications.RemoveAt(0)
         $already = @($verificationTasks | Where-Object {
@@ -860,7 +1450,7 @@ function Process-VerificationTasks {
                 if (-not $observerFailures.Contains("SEALED_WINDOW_VERIFICATION_REJECTED")) {
                     $observerFailures.Add("SEALED_WINDOW_VERIFICATION_REJECTED")
                     $null = Add-ServiceEvent -Channel "OBSERVER" -Payload ([ordered]@{
-                        event = "OBSERVER_FAILED"; observer = "WINDOW_VERIFIER"
+                        event = "OBSERVER_FAILED"; failure_id = "SEALED_WINDOW_VERIFICATION_REJECTED"; observer = "WINDOW_VERIFIER"
                         symbol = $task.symbol; kind = $task.kind
                         detail = "Rust verifier rejected a sealed window (exit $exit)"
                     })
@@ -878,14 +1468,23 @@ function Process-VerificationTasks {
             } else {
                 throw "Rust verifier produced no report artifact."
             }
-            if ($rustValue.status -cne "PASS") {
+            $rustQualified = $rustValue.status -ceq "PASS"
+            if ($task.kind -ceq "segment") {
+                $rustQualified = $rustQualified -and $rustValue.schema -ceq "LiveArbitrationVerificationV2" -and
+                    $rustValue.oracle_identity -ceq "PASS" -and $rustValue.artifact_coverage -ceq "PASS" -and
+                    $rustValue.terminal_complete -eq $true -and
+                    $rustValue.journal_prefix -eq $true -and $rustValue.audit_scope -ceq "SEALED_JOURNAL_PREFIX" -and
+                    $rustValue.coverage_exhaustive -eq $false -and
+                    $rustValue.expected_artifact_inventory_sha256 -ceq (Get-RawQualificationSha256File $task.expectedInventory)
+            }
+            if (-not $rustQualified) {
                 $verificationTasks.Remove($task)
                 if (-not $observerFailures.Contains("SEALED_WINDOW_VERIFICATION_REJECTED")) {
                     $observerFailures.Add("SEALED_WINDOW_VERIFICATION_REJECTED")
                     $null = Add-ServiceEvent -Channel "OBSERVER" -Payload ([ordered]@{
-                        event = "OBSERVER_FAILED"; observer = "WINDOW_VERIFIER"
+                        event = "OBSERVER_FAILED"; failure_id = "SEALED_WINDOW_VERIFICATION_REJECTED"; observer = "WINDOW_VERIFIER"
                         symbol = $task.symbol; kind = $task.kind
-                        detail = "Rust verifier status was not PASS"
+                        detail = "Rust verifier did not establish the required complete bounded prefix and oracle identity"
                     })
                 }
                 continue
@@ -902,7 +1501,10 @@ function Process-VerificationTasks {
                 $pyArgs = if ($task.kind -ceq "epoch") {
                     [string[]]@("-B", "-m", "binance_lob.hot_redundant_verify_cli", $task.root, "--output", $task.pythonReport)
                 } else {
-                    [string[]]@("-B", "-m", "binance_lob.live_arbitration_verify_cli", $task.journal, "--tail-segment-only", "--oracle-artifact", $task.artifact, "--output", $task.pythonReport)
+                    [string[]]@("-B", "-m", "binance_lob.live_arbitration_verify_cli",
+                        "--journal-root", $task.dir, "--journal-prefix", "--oracle-artifact", $task.artifact,
+                        "--expected-artifact-inventory", $task.expectedInventory, "--output", $task.pythonReport,
+                        "--oracle-cache", (Join-Path $verificationRoot "oracle-cache\python"))
                 }
                 $launch = [RawQualificationNative]::StartSuspendedInJobRetained(
                     $job, $python, $pyArgs, $repo, $pyStdout, $pyStderr
@@ -924,7 +1526,7 @@ function Process-VerificationTasks {
             if (-not $observerFailures.Contains("SEALED_WINDOW_VERIFICATION_TIMEOUT")) {
                 $observerFailures.Add("SEALED_WINDOW_VERIFICATION_TIMEOUT")
                 $null = Add-ServiceEvent -Channel "OBSERVER" -Payload ([ordered]@{
-                    event = "OBSERVER_FAILED"; observer = "WINDOW_VERIFIER"
+                    event = "OBSERVER_FAILED"; failure_id = "SEALED_WINDOW_VERIFICATION_TIMEOUT"; observer = "WINDOW_VERIFIER"
                     symbol = $task.symbol; kind = $task.kind; stage = $task.stage
                     detail = "sealed-window verification exceeded its monotonic deadline and was terminated"
                 })
@@ -945,7 +1547,7 @@ function Process-VerificationTasks {
                 if (-not $observerFailures.Contains("SEALED_WINDOW_VERIFICATION_TIMEOUT")) {
                     $observerFailures.Add("SEALED_WINDOW_VERIFICATION_TIMEOUT")
                     $null = Add-ServiceEvent -Channel "OBSERVER" -Payload ([ordered]@{
-                        event = "OBSERVER_FAILED"; observer = "WINDOW_VERIFIER"
+                        event = "OBSERVER_FAILED"; failure_id = "SEALED_WINDOW_VERIFICATION_TIMEOUT"; observer = "WINDOW_VERIFIER"
                         symbol = $task.symbol; kind = $task.kind; stage = "python"
                         detail = "sealed-window Python verification exceeded its monotonic deadline and was terminated"
                     })
@@ -961,7 +1563,7 @@ function Process-VerificationTasks {
             if (-not $observerFailures.Contains("SEALED_WINDOW_VERIFICATION_REJECTED")) {
                 $observerFailures.Add("SEALED_WINDOW_VERIFICATION_REJECTED")
                 $null = Add-ServiceEvent -Channel "OBSERVER" -Payload ([ordered]@{
-                    event = "OBSERVER_FAILED"; observer = "WINDOW_VERIFIER"
+                    event = "OBSERVER_FAILED"; failure_id = "SEALED_WINDOW_VERIFICATION_REJECTED"; observer = "WINDOW_VERIFIER"
                     symbol = $task.symbol; kind = $task.kind
                     detail = "Python verifier rejected a sealed window (exit $exit)"
                 })
@@ -969,13 +1571,22 @@ function Process-VerificationTasks {
             continue
         }
         $pyValue = Get-Content -LiteralPath $task.pythonReport -Raw | ConvertFrom-Json -ErrorAction Stop
-        if ($pyValue.status -cne "PASS") {
+        $pythonQualified = $pyValue.status -ceq "PASS"
+        if ($task.kind -ceq "segment") {
+            $pythonQualified = $pythonQualified -and $pyValue.schema -ceq "LiveArbitrationVerificationV2" -and
+                $pyValue.oracle_identity -ceq "PASS" -and $pyValue.artifact_coverage -ceq "PASS" -and
+                $pyValue.terminal_complete -eq $true -and
+                $pyValue.journal_prefix -eq $true -and $pyValue.audit_scope -ceq "SEALED_JOURNAL_PREFIX" -and
+                $pyValue.coverage_exhaustive -eq $false -and
+                $pyValue.expected_artifact_inventory_sha256 -ceq (Get-RawQualificationSha256File $task.expectedInventory)
+        }
+        if (-not $pythonQualified) {
             if (-not $observerFailures.Contains("SEALED_WINDOW_VERIFICATION_REJECTED")) {
                 $observerFailures.Add("SEALED_WINDOW_VERIFICATION_REJECTED")
                 $null = Add-ServiceEvent -Channel "OBSERVER" -Payload ([ordered]@{
-                    event = "OBSERVER_FAILED"; observer = "WINDOW_VERIFIER"
+                    event = "OBSERVER_FAILED"; failure_id = "SEALED_WINDOW_VERIFICATION_REJECTED"; observer = "WINDOW_VERIFIER"
                     symbol = $task.symbol; kind = $task.kind
-                    detail = "Python verifier status was not PASS"
+                    detail = "Python verifier did not establish the required complete bounded prefix and oracle identity"
                 })
             }
             continue
@@ -993,6 +1604,7 @@ function Process-VerificationTasks {
         } else {
             $null = Add-ServiceEvent -Channel "SERVICE" -Payload ([ordered]@{
                 event = "LIVE_ARBITRATION_SEGMENT_VERIFIED"; symbol = $task.symbol; sequence = $task.sequence
+                audit_scope = "SEALED_JOURNAL_PREFIX"; coverage_exhaustive = $false
             })
         }
     }
@@ -1009,80 +1621,25 @@ try {
         event = "SERVICE_STARTED"; run_id = $runId; preflight_sha256 = $preflightSha
     })
 
-    $kernelRoot = Join-Path $observerRoot "kernel"
-    New-Item -ItemType Directory -Path $kernelRoot | Out-Null
-    $etl = Join-Path $kernelRoot "kernel-network.etl"
-    $etwStop = Join-Path $kernelRoot "stop.request"
-    $etwOut = Join-Path $kernelRoot "controller.stdout.jsonl"
-    $etwErr = Join-Path $kernelRoot "controller.stderr.txt"
-    # Continuous operation (ADR-17 B2): the observer deadline is bounded per
-    # epoch (rotated with the epoch), never a global service horizon.
     $etwDeadline = if ($isContinuous) {
         [uint32][Math]::Min(691200, [uint64]$EpochWindowSeconds + 1800)
-    } else {
-        [uint32][Math]::Min(691200, [uint64]$TotalSeconds + 1800)
-    }
+    } else { [uint32][Math]::Min(691200, [uint64]$TotalSeconds + 1800) }
     $observerRunId = "observed-$nonce"
-    $sessionName = "BinanceProduction_$nonce"
-    $etwStartedUtc = [DateTimeOffset]::UtcNow
+    $powershell = Join-Path $PSHOME "powershell.exe"
+    $observerSkipped = $isContinuous -and $SkipKernelObserver
     $processIntervals.Add([pscustomobject]@{
         role = "LAUNCHER"; symbol = $null; pid = [uint32]$PID
-        interval_start_utc = $etwStartedUtc; interval_end_utc = $null
+        interval_start_utc = $startUtc; interval_end_utc = $null
     })
-    $observerSkipped = $isContinuous -and $SkipKernelObserver
-    if ($observerSkipped) {
-        # TEST-ONLY: no kernel controller, no network witness; recorded
-        # honestly at the terminal as SKIPPED_NOT_ELEVATED.
-        $etw = $null
-        $witness = $null
-    } else {
-        $etw = [RawQualificationNative]::StartSuspendedInJobRetained(
-            $job, $kernelTrace,
-            ([string[]]@($sessionName, $etl, $etwStop, [string]$KernelTraceMiB, [string]$etwDeadline)),
-            $repo, $etwOut, $etwErr
-        )
-        $readyDeadline = [Diagnostics.Stopwatch]::StartNew()
-        $etwReady = $false
-        while ($readyDeadline.Elapsed.TotalSeconds -lt 30 -and -not $etwReady) {
-            if ([RawQualificationNative]::WaitForProcessExit($etw.ProcessHandle, 0)) { break }
-            if (Test-Path -LiteralPath $etwOut -PathType Leaf) {
-                $first = @(Get-Content -LiteralPath $etwOut -ErrorAction SilentlyContinue | Select-Object -First 1)
-                if ($first.Count -eq 1) {
-                    try {
-                        $value = $first[0] | ConvertFrom-Json -ErrorAction Stop
-                        $etwReady = $value.schema -ceq "KernelNetworkTraceReadyV1" -and $value.status -ceq "READY"
-                    } catch {}
-                }
-            }
-            if (-not $etwReady) { Start-Sleep -Milliseconds 100 }
-        }
-        if (-not $etwReady) { throw "Kernel ETW did not publish exact READY before market capture." }
-    }
-
-    $networkRoot = Join-Path $observerRoot "network"
-    $networkStop = Join-Path $networkRoot "stop.request"
-    $witnessOut = Join-Path $observerRoot "network.stdout.txt"
-    $witnessErr = Join-Path $observerRoot "network.stderr.txt"
-    $powershell = Join-Path $PSHOME "powershell.exe"
     if (-not $observerSkipped) {
-        $witnessArguments = [string[]]@(
-            "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", $networkWitnessScript,
-            "-EvidenceRoot", $networkRoot, "-ObservationId", $observerRunId,
-            "-DurationSeconds", [string]$etwDeadline, "-IntervalSeconds", "30",
-            "-ProbeTimeoutMilliseconds", "2000", "-StopFile", $networkStop
-        )
-        $witness = [RawQualificationNative]::StartSuspendedInJobRetained(
-            $job, $powershell, $witnessArguments, $repo, $witnessOut, $witnessErr
-        )
-        $witnessDeadline = [Diagnostics.Stopwatch]::StartNew()
-        while ($witnessDeadline.Elapsed.TotalSeconds -lt 30 -and
-            -not (Test-Path -LiteralPath (Join-Path $networkRoot "network-witness-startup.json") -PathType Leaf)) {
-            if ([RawQualificationNative]::WaitForProcessExit($witness.ProcessHandle, 0)) { break }
+        Start-ServiceObserverWindow
+        while ($observerWindows[0].ready -eq 0) {
+            Update-ServiceObserverWindows -NoRotation
             Start-Sleep -Milliseconds 100
         }
-        if (-not (Test-Path -LiteralPath (Join-Path $networkRoot "network-witness-startup.json") -PathType Leaf)) {
-            throw "Independent network witness did not publish startup evidence."
-        }
+        $null = Add-ServiceEvent -Channel "OBSERVER" -Payload ([ordered]@{
+            event = "OBSERVER_CAPTURE_INTERVAL_STARTED"
+        })
     }
 
     $states["BTCUSDT"] = New-SymbolState -Symbol "BTCUSDT" -Code "b"
@@ -1104,6 +1661,9 @@ try {
             if ($origin.Elapsed.TotalSeconds -ge $TotalSeconds) { $serviceLoopActive = $false }
         }
         if (-not $serviceLoopActive) { break }
+        foreach ($successorState in @($successors.Values | Where-Object { $null -ne $_ })) {
+            Update-SymbolArtifactAndReadiness -State $successorState
+        }
         foreach ($state in @($states.Values)) {
             # Planned epoch renewal (ADR-17 B3/R2): launch the successor while
             # the predecessor still keeps both lanes capturing.  The symbol's
@@ -1128,7 +1688,7 @@ try {
             }
             if ($null -ne $state.Launch) {
                 Update-SymbolArtifactAndReadiness -State $state
-                if ($isContinuous -and $state.NeedsArbiterRebind -and $null -ne $state.Artifact) {
+                if ($isContinuous -and $state.NeedsArbiterRebind -and $state.EpochReady -and $null -ne $state.Artifact) {
                     $state.NeedsArbiterRebind = $false
                     Rebind-LiveArbiter -State $state -NewArtifactRoot $state.Artifact
                 }
@@ -1150,6 +1710,7 @@ try {
                         exit_code = $code; artifact = if ($null -eq $state.Artifact) { $null } else { Get-ServiceRelativePath -Root $runRoot -FullPath $state.Artifact }
                     })
                     $cleanExit = ($code -eq 0) -and $terminalExists
+                    $state.LastExitCode = $code; $state.LastExitClean = $cleanExit
                     if ($isContinuous -and $cleanExit -and $null -ne $state.Artifact) {
                         # Seal and verify the completed epoch WHILE the next
                         # epoch captures (ADR-17 B2): the verification runs
@@ -1161,17 +1722,18 @@ try {
                     }
                     $successor = $successors[$state.Symbol]
                     if ($isContinuous -and $null -ne $successor) {
-                        # Planned renewal: promote the successor WITHOUT opening
-                        # an outer gap and WITHOUT backoff â€” the lanes never
-                        # stopped.  A dirty predecessor exit is typed but the
-                        # successor still carries the capture.
+                        # A launched successor is not proof of overlap: its
+                        # current epoch must independently be READY.
                         $state.PlannedRenewal = $cleanExit
                         $successors[$state.Symbol] = $null
                         $states[$state.Symbol] = $successor
+                        if ($null -ne $state.OuterGap) { $successor.OuterGap = $state.OuterGap }
+                        $coveredPromotion = $successor.EpochReady -and $null -eq $successor.OuterGap
+                        if (-not $successor.EpochReady) { Open-SymbolOuterGap -State $successor -ExitCode $code }
                         $null = Add-ServiceEvent -Channel "SUPERVISOR" -Payload ([ordered]@{
                             event = "SYMBOL_EPOCH_RENEWED"; symbol = $state.Symbol
                             predecessor_epoch = $state.Epoch; successor_epoch = $successor.Epoch
-                            predecessor_clean = $cleanExit; no_outer_gap = $true
+                            predecessor_clean = $cleanExit; no_outer_gap = [bool]$coveredPromotion
                         })
                         if ($state.ConsecutiveFailures -gt 0) { $state.ConsecutiveFailures = 0 }
                         $null = [RawQualificationNative]::CloseRetainedProcessHandle($state.Launch)
@@ -1181,7 +1743,7 @@ try {
                         # resume chains the journal segments and never
                         # duplicates or rolls back.  If the successor is not
                         # READY yet, the rebind fires as soon as it is.
-                        if ($null -ne $successor.Artifact) {
+                        if ($successor.EpochReady -and $null -ne $successor.Artifact) {
                             Rebind-LiveArbiter -State $successor -NewArtifactRoot $successor.Artifact
                         } else {
                             $successor.NeedsArbiterRebind = $true
@@ -1190,17 +1752,7 @@ try {
                     }
                     $null = [RawQualificationNative]::CloseRetainedProcessHandle($state.Launch)
                     $state.Launch = $null
-                    if ($null -eq $state.OuterGap) {
-                        $state.OuterGap = [pscustomobject]@{
-                            gap_id = [uint64]($outerGaps.Count + @($states.Values | Where-Object { $null -ne $_.OuterGap }).Count)
-                            opened_elapsed_ticks = [uint64]$origin.ElapsedTicks
-                        }
-                        $null = Add-ServiceEvent -Channel "COVERAGE" -Payload ([ordered]@{
-                            event = "OUTER_GAP_OPENED"; symbol = $state.Symbol; gap_id = $state.OuterGap.gap_id
-                            opened_elapsed_ticks = $state.OuterGap.opened_elapsed_ticks
-                            prior_exit_code = $code
-                        })
-                    }
+                    Open-SymbolOuterGap -State $state -ExitCode $code
                     $state.ConsecutiveFailures = [int]$state.ConsecutiveFailures + 1
                     $delay = [Math]::Min(60.0, [Math]::Pow(2.0, [Math]::Min(5, $state.ConsecutiveFailures - 1)))
                     $state.RestartAtSeconds = $origin.Elapsed.TotalSeconds + $delay
@@ -1214,13 +1766,16 @@ try {
                     # instead of launching a colliding epoch.
                     $successors[$state.Symbol] = $null
                     $states[$state.Symbol] = $successor
+                    if ($null -ne $state.OuterGap) { $successor.OuterGap = $state.OuterGap }
+                    $coveredPromotion = $successor.EpochReady -and $null -eq $successor.OuterGap
+                    if (-not $successor.EpochReady) { Open-SymbolOuterGap -State $successor -ExitCode 0 }
                     $null = Add-ServiceEvent -Channel "SUPERVISOR" -Payload ([ordered]@{
                         event = "SYMBOL_EPOCH_RENEWED"; symbol = $state.Symbol
                         predecessor_epoch = $state.Epoch; successor_epoch = $successor.Epoch
-                        predecessor_clean = $false; no_outer_gap = $true
+                        predecessor_clean = $false; no_outer_gap = [bool]$coveredPromotion
                         recovery_promotion = $true
                     })
-                    if ($null -ne $successor.Artifact) {
+                    if ($successor.EpochReady -and $null -ne $successor.Artifact) {
                         Rebind-LiveArbiter -State $successor -NewArtifactRoot $successor.Artifact
                     } else {
                         $successor.NeedsArbiterRebind = $true
@@ -1270,7 +1825,7 @@ try {
                     if (-not $observerFailures.Contains("LIVE_ARBITRATION_EXITED_EARLY")) {
                         $observerFailures.Add("LIVE_ARBITRATION_EXITED_EARLY")
                         $null = Add-ServiceEvent -Channel "OBSERVER" -Payload ([ordered]@{
-                            event = "OBSERVER_FAILED"; observer = "LIVE_ARBITRATION"; symbol = $arbiter.symbol
+                            event = "OBSERVER_FAILED"; failure_id = "LIVE_ARBITRATION_EXITED_EARLY"; observer = "LIVE_ARBITRATION"; symbol = $arbiter.symbol
                             detail = "sidecar exited with code $arbExit; raw lanes continue; resume scheduled"
                         })
                     }
@@ -1278,7 +1833,7 @@ try {
                     if (-not $observerFailures.Contains("LIVE_ARBITRATION_EXITED_EARLY")) {
                         $observerFailures.Add("LIVE_ARBITRATION_EXITED_EARLY")
                         $null = Add-ServiceEvent -Channel "OBSERVER" -Payload ([ordered]@{
-                            event = "OBSERVER_FAILED"; observer = "LIVE_ARBITRATION"; symbol = $arbiter.symbol
+                            event = "OBSERVER_FAILED"; failure_id = "LIVE_ARBITRATION_EXITED_EARLY"; observer = "LIVE_ARBITRATION"; symbol = $arbiter.symbol
                         })
                     }
                 }
@@ -1295,7 +1850,20 @@ try {
                 # (Bare switch: PowerShell 5.1 rejects `-ResumeFromDeath $true`
                 # in this parameter set — the boolean becomes a positional
                 # argument and the binding throws.)
-                $null = Start-LiveArbiter -State $state -ArtifactRoot "$($arbiter.artifact)" -ResumeFromDeath
+                try {
+                    $null = Start-LiveArbiter -State $state -ArtifactRoot "$($arbiter.artifact)" -ResumeFromDeath
+                } catch {
+                    $arbiter.consecutiveFailures = [int]$arbiter.consecutiveFailures + 1
+                    $delay = [Math]::Min(60.0, [Math]::Pow(2.0, [Math]::Min(5, $arbiter.consecutiveFailures - 1)))
+                    $arbiter.restartAtSeconds = $origin.Elapsed.TotalSeconds + $delay
+                    if (-not $observerFailures.Contains("LIVE_ARBITRATION_RELAUNCH_FAILED")) {
+                        $observerFailures.Add("LIVE_ARBITRATION_RELAUNCH_FAILED")
+                        $null = Add-ServiceEvent -Channel "OBSERVER" -Payload ([ordered]@{
+                            event = "OBSERVER_FAILED"; failure_id = "LIVE_ARBITRATION_RELAUNCH_FAILED"; observer = "LIVE_ARBITRATION"; symbol = $arbiter.symbol
+                            detail = "sidecar relaunch failed; raw lanes continue; resume scheduled: $($_.Exception.Message)"
+                        })
+                    }
+                }
             }
         }
         if (-not $serviceReady -and $origin.Elapsed.TotalSeconds -ge 90) {
@@ -1317,7 +1885,7 @@ try {
                 if (-not $observerFailures.Contains("CLOCK_HEALTH_POLICY_FAILED")) {
                     $observerFailures.Add("CLOCK_HEALTH_POLICY_FAILED")
                     $null = Add-ServiceEvent -Channel "OBSERVER" -Payload ([ordered]@{
-                        event = "OBSERVER_FAILED"; observer = "WINDOWS_CLOCK"; detail = [string]$_
+                        event = "OBSERVER_FAILED"; failure_id = "CLOCK_HEALTH_POLICY_FAILED"; observer = "WINDOWS_CLOCK"; detail = [string]$_
                     })
                 }
             }
@@ -1339,6 +1907,11 @@ try {
                     }
                     if (-not $observerFailures.Contains("STORAGE_RESERVE_CROSSED_SAFE_STOP")) {
                         $observerFailures.Add("STORAGE_RESERVE_CROSSED_SAFE_STOP")
+                        $null = Add-ServiceEvent -Channel "OBSERVER" -Payload ([ordered]@{
+                            event = "OBSERVER_FAILED"; observer = "STORAGE_RESERVE"
+                            detail = "storage reserve crossed; cooperative safe stop requested"
+                            failure_id = "STORAGE_RESERVE_CROSSED_SAFE_STOP"
+                        })
                         $null = Add-ServiceEvent -Channel "HOST" -Payload ([ordered]@{
                             event = "STORAGE_SAFE_STOP_REQUESTED"; free_gib = $currentFreeGiB
                             reserve_gib = $persistentReserveGiB
@@ -1370,52 +1943,19 @@ try {
                 $journalSize = if (Test-Path -LiteralPath $arbiter.journal -PathType Leaf) {
                     (Get-Item -LiteralPath $arbiter.journal).Length
                 } else { 0 }
-                if ($arbiterAlive) {
-                    if ($null -ne $arbiter.lastAuditedSize) {
-                        if ($journalSize -le $arbiter.lastAuditedSize) {
-                            # No growth across two telemetry ticks (>= 2 *
-                            # TelemetryIntervalSeconds) while the arbiter is
-                            # alive: a semantic stall deadline, not a 250 ms
-                            # sampling artifact.  A planned rebind transition
-                            # (rebindActive) is exempt up to its bound (60 s:
-                            # the drain deadline is 30 s) — defect
-                            # hrs-e4878b5f365f typed a legitimate 21.3 s rebind
-                            # pause as a stall.
-                            $transitionExempt = $arbiter.rebindActive -and
-                                $null -ne $arbiter.rebindLaunchedAt -and
-                                ([DateTimeOffset]::UtcNow - $arbiter.rebindLaunchedAt).TotalSeconds -lt 60
-                            if (-not $transitionExempt) {
-                                $arbiter.rebindActive = $false
-                                $arbiter.stallTicks = [int]$arbiter.stallTicks + 1
-                                if ($arbiter.stallTicks -ge 2 -and
-                                    -not $observerFailures.Contains("LIVE_ARBITRATION_STALLED")) {
-                                    $observerFailures.Add("LIVE_ARBITRATION_STALLED")
-                                    $null = Add-ServiceEvent -Channel "OBSERVER" -Payload ([ordered]@{
-                                        event = "OBSERVER_FAILED"; observer = "LIVE_ARBITRATION"
-                                        symbol = $arbiter.symbol
-                                        detail = "canonical journal did not grow across two telemetry ticks"
-                                    })
-                                }
-                            }
-                        } else {
-                            $arbiter.stallTicks = 0
-                            $arbiter.rebindActive = $false
-                        }
-                    }
-                    $arbiter.lastAuditedSize = $journalSize
-                }
+                Update-CanonicalStreamHealth -Arbiter $arbiter -ProcessAlive $arbiterAlive
                 # Collect a previously launched detached audit.
                 if ($null -ne $arbiter.auditLaunch) {
                     if ([RawQualificationNative]::WaitForProcessExit($arbiter.auditLaunch.ProcessHandle, 0)) {
                         $auditExit = [uint32][RawQualificationNative]::GetProcessExitCode($arbiter.auditLaunch.ProcessHandle)
-                        $arbiter.lastPrefixAuditResult = if ($auditExit -eq 0) { "PASS" } else { "FAIL" }
-                        if ($auditExit -ne 0) {
+                        $arbiter.lastPrefixAuditResult = Get-LivePrefixAuditResult -ExitCode $auditExit -ReportPath $arbiter.auditStdout
+                        if ($arbiter.lastPrefixAuditResult -ceq "FAIL") {
                             if (-not $observerFailures.Contains("LIVE_ARBITRATION_PREFIX_AUDIT")) {
                                 $observerFailures.Add("LIVE_ARBITRATION_PREFIX_AUDIT")
                                 $null = Add-ServiceEvent -Channel "OBSERVER" -Payload ([ordered]@{
-                                    event = "OBSERVER_FAILED"; observer = "LIVE_ARBITRATION"
+                                    event = "OBSERVER_FAILED"; failure_id = "LIVE_ARBITRATION_PREFIX_AUDIT"; observer = "LIVE_ARBITRATION"
                                     symbol = $arbiter.symbol
-                                    detail = "incremental prefix audit rejected the canonical journal (exit $auditExit)"
+                                    detail = "incremental whole-chain prefix audit failed or returned an invalid scope (exit $auditExit)"
                                 })
                             }
                         }
@@ -1437,7 +1977,7 @@ try {
                         if (-not $observerFailures.Contains("LIVE_ARBITRATION_AUDIT_TIMEOUT")) {
                             $observerFailures.Add("LIVE_ARBITRATION_AUDIT_TIMEOUT")
                             $null = Add-ServiceEvent -Channel "OBSERVER" -Payload ([ordered]@{
-                                event = "OBSERVER_FAILED"; observer = "LIVE_ARBITRATION_AUDITOR"
+                                event = "OBSERVER_FAILED"; failure_id = "LIVE_ARBITRATION_AUDIT_TIMEOUT"; observer = "LIVE_ARBITRATION_AUDITOR"
                                 symbol = $arbiter.symbol; detail = "prefix audit exceeded its deadline and was terminated"
                             })
                         }
@@ -1454,7 +1994,6 @@ try {
                     $arbiter.auditStderr = Join-Path $arbiter.dir ("{0}-audit-{1}.stderr.txt" -f $arbiter.symbol, $arbiter.auditSequence)
                     $arbiter.auditSequence = [int]$arbiter.auditSequence + 1
                     $verifierExe = if ($ArbiterVerifyOverride -ne "") { $ArbiterVerifyOverride } else { $liveArbiterVerify }
-                    $auditArgs = [string[]]@($arbiter.journal, "--incremental")
                     # Incremental prefix audits run the bounded raw oracle over
                     # the covered prefix (ADR-17 B5).  The oracle root is the
                     # SYMBOL root: the RESUMED segment declares the artifacts it
@@ -1464,7 +2003,7 @@ try {
                     # hrs-f7e726a48da8: the audit rejected those catch-up trades
                     # as invented when bound to the epoch artifact only).
                     $auditSymbolRoot = Join-Path $runRoot ($states[$arbiter.symbol].Code)
-                    $auditArgs += [string[]]@("--oracle-artifact", $auditSymbolRoot)
+                    $auditArgs = Get-LivePrefixAuditArguments -JournalRoot $arbiter.dir -ArtifactRoot $auditSymbolRoot -OracleCache (Join-Path $verificationRoot "oracle-cache\rust")
                     $arbiter.auditLaunch = [RawQualificationNative]::StartSuspendedInJobRetained(
                         $job, $verifierExe, $auditArgs, $repo, $arbiter.auditStdout, $arbiter.auditStderr
                     )
@@ -1474,18 +2013,7 @@ try {
             $lastTelemetry.Restart()
         }
 
-        if (-not $observerSkipped -and $null -ne $etw -and [RawQualificationNative]::WaitForProcessExit($etw.ProcessHandle, 0)) {
-            if (-not $observerFailures.Contains("KERNEL_ETW_EXITED_EARLY")) {
-                $observerFailures.Add("KERNEL_ETW_EXITED_EARLY")
-                $null = Add-ServiceEvent -Channel "OBSERVER" -Payload ([ordered]@{ event = "OBSERVER_FAILED"; observer = "KERNEL_ETW" })
-            }
-        }
-        if (-not $observerSkipped -and $null -ne $witness -and [RawQualificationNative]::WaitForProcessExit($witness.ProcessHandle, 0)) {
-            if (-not $observerFailures.Contains("NETWORK_WITNESS_EXITED_EARLY")) {
-                $observerFailures.Add("NETWORK_WITNESS_EXITED_EARLY")
-                $null = Add-ServiceEvent -Channel "OBSERVER" -Payload ([ordered]@{ event = "OBSERVER_FAILED"; observer = "NETWORK_WITNESS" })
-            }
-        }
+        Update-ServiceObserverWindows
         # Sealed-window verification (ADR-17 B2): every completed epoch and
         # every sealed canonical segment is verified with BOTH independent
         # oracles WHILE the next epoch captures â€” as detached processes with
@@ -1534,11 +2062,37 @@ try {
 
     $drain = [Diagnostics.Stopwatch]::StartNew()
     $drainStates = @($states.Values) + @($successors.Values | Where-Object { $null -ne $_ })
+    if ($serviceStopRequested) {
+        # A capture epoch does not watch stop.request. One that still has
+        # more than a minute left would sit in the 1800 s drain and the
+        # fault gate's 600 s cleanup would kill the launcher first. End
+        # only those. A short epoch, such as the 20 s observer windows,
+        # must finish and seal: cutting it leaves pending work and the
+        # arbiter rejects a stop that should close cleanly.
+        foreach ($state in $drainStates) {
+            if ($null -eq $state.Launch) { continue }
+            if ([RawQualificationNative]::WaitForProcessExit($state.Launch.ProcessHandle, 0)) { continue }
+            $epochRemaining = [double]$state.RequestedSeconds - ($origin.Elapsed.TotalSeconds - [double]$state.EpochLaunchSeconds)
+            if ($epochRemaining -le 60) { continue }
+            try {
+                $null = [RawQualificationNative]::TerminateProcessHandle($state.Launch.ProcessHandle, 0xEE33)
+            } catch {
+                if (-not [RawQualificationNative]::WaitForProcessExit($state.Launch.ProcessHandle, 0)) { throw }
+            }
+            $null = Add-ServiceEvent -Channel "SUPERVISOR" -Payload ([ordered]@{
+                event = "SYMBOL_EPOCH_STOP_REQUESTED"; symbol = $state.Symbol; epoch = $state.Epoch
+                pid = [uint32]$state.Launch.ProcessId; reason = "SERVICE_STOP"
+            })
+        }
+    }
     while (@($drainStates | Where-Object { $null -ne $_.Launch }).Count -ne 0) {
         foreach ($state in $drainStates) {
             if ($null -ne $state.Launch -and [RawQualificationNative]::WaitForProcessExit($state.Launch.ProcessHandle, 0)) {
                 Update-SymbolArtifactAndReadiness -State $state
                 $code = [uint32][RawQualificationNative]::GetProcessExitCode($state.Launch.ProcessHandle)
+                $state.LastExitCode = $code
+                $state.LastExitClean = $code -eq 0 -and $null -ne $state.Artifact -and
+                    (Test-Path -LiteralPath (Join-Path $state.Artifact "supervisor-terminal.json") -PathType Leaf)
                 $interval = @($processIntervals | Where-Object {
                     [uint32]$_.pid -eq [uint32]$state.Launch.ProcessId -and $null -eq $_.interval_end_utc
                 })
@@ -1556,30 +2110,31 @@ try {
                 $state.Launch = $null
             }
         }
+        Update-ServiceObserverWindows
         if ($drain.Elapsed.TotalSeconds -gt 1800) { throw "Symbol supervisors exceeded terminal drain deadline." }
         Start-Sleep -Milliseconds 250
     }
 
     if (-not $observerSkipped) {
-        foreach ($path in @($etwStop, $networkStop)) {
-            if (-not (Test-Path -LiteralPath $path)) {
-                # Both cooperative observers define stop by create-only existence;
-                # NetworkWitnessV2 additionally requires the exact file to be empty.
-                $null = Write-RawQualificationDurableNewFile -Path $path -Bytes ([byte[]]@())
-            }
+        while (@($observerWindows | Where-Object { $_.ready -eq 0 }).Count -gt 0) {
+            Update-ServiceObserverWindows -NoRotation
+            Start-Sleep -Milliseconds 100
         }
-        foreach ($observer in @($etw, $witness)) {
-            if (-not [RawQualificationNative]::WaitForProcessExit($observer.ProcessHandle, 30000)) {
-                $observerFailures.Add("OBSERVER_STOP_DEADLINE_EXCEEDED")
-                [RawQualificationNative]::TerminateProcessHandle($observer.ProcessHandle, 0xEE21)
-                $null = [RawQualificationNative]::WaitForProcessExit($observer.ProcessHandle, 30000)
-            }
+        # The required capture interval ends only after every supervisor has
+        # exited, before either diagnostic plane receives its final stop.
+        $null = Add-ServiceEvent -Channel "OBSERVER" -Payload ([ordered]@{
+            event = "OBSERVER_CAPTURE_INTERVAL_ENDED"
+        })
+        foreach ($window in $observerWindows) { Stop-ServiceObserverWindow -Window $window }
+        $observerDrain = [Diagnostics.Stopwatch]::StartNew()
+        while (@($observerWindows | Where-Object { $null -ne $_.kernel -or $null -ne $_.network }).Count -gt 0) {
+            Update-ServiceObserverWindows -NoRotation
+            if ($observerDrain.Elapsed.TotalSeconds -ge 60) { throw "Observer handles did not drain within 60 seconds." }
+            Start-Sleep -Milliseconds 100
         }
-        $etwExitCode = [uint32][RawQualificationNative]::GetProcessExitCode($etw.ProcessHandle)
-        $witnessExitCode = [uint32][RawQualificationNative]::GetProcessExitCode($witness.ProcessHandle)
-        $etwProcessId = [uint32]$etw.ProcessId
     }
     $observationEndUtc = [DateTimeOffset]::UtcNow
+    Sync-ServiceSourceInventory
     # Live cross-lane arbitration (ADR-16/ADR-17): the sidecar stops on the
     # cooperative stop request (Continuous) or at the capture horizon
     # (bounded modes); its closed canonical journal set is independently
@@ -1593,18 +2148,29 @@ try {
         foreach ($symbolName in @("BTCUSDT", "ETHUSDT")) {
             $successor = $successors[$symbolName]
             if ($null -ne $successor) {
+                $predecessor = $states[$symbolName]
+                $transition = Get-SuccessorTransitionEvidence -Predecessor $predecessor -Successor $successor
+                if ($null -ne $predecessor.OuterGap) { $successor.OuterGap = $predecessor.OuterGap }
                 $states[$symbolName] = $successor
                 $successors[$symbolName] = $null
+                if (-not $successor.EpochReady) { Open-SymbolOuterGap -State $successor -ExitCode 0 }
                 $null = Add-ServiceEvent -Channel "SUPERVISOR" -Payload ([ordered]@{
                     event = "SYMBOL_EPOCH_RENEWED"; symbol = $symbolName
                     predecessor_epoch = $successor.Epoch - 1; successor_epoch = $successor.Epoch
-                    predecessor_clean = $true; no_outer_gap = $true
+                    predecessor_clean = $transition.predecessor_clean; no_outer_gap = $transition.no_outer_gap
                     stop_transition = $true
                 })
             }
             $state = $states[$symbolName]
             $arb = $arbiterStates[$symbolName]
-            if ($null -ne $state.Artifact -and $null -ne $arb -and $arb.artifact -cne $state.Artifact) {
+            # An if-statement unwraps a one-element array before assignment.
+            # Under StrictMode that scalar has no Count and aborts the stop
+            # before the arbiter can reject the interrupted prior.
+            $missingSources = @($(if ($null -ne $arb) {
+                @(Get-SymbolArtifactInventory -Symbol $symbolName | Where-Object { $_ -notin $arb.sourceArtifacts })
+            }))
+            if ($null -ne $state.Artifact -and $null -ne $arb -and
+                ($arb.artifact -cne $state.Artifact -or $missingSources.Count -gt 0)) {
                 Rebind-LiveArbiter -State $state -NewArtifactRoot $state.Artifact
             }
         }
@@ -1612,11 +2178,15 @@ try {
     # Drain any pending sealed-segment verification before the final
     # journal-set audit (bounded by the audit deadline).
     $taskDrain = [Diagnostics.Stopwatch]::StartNew()
-    while ((@($pendingSegmentVerifications).Count -gt 0 -or
+    while ((@($pendingEpochVerifications).Count -gt 0 -or @($pendingSegmentVerifications).Count -gt 0 -or
             @($verificationTasks | Where-Object { $null -ne $_.launch }).Count -gt 0) -and
             $taskDrain.Elapsed.TotalSeconds -lt $arbiterAuditDeadlineSeconds) {
         Process-VerificationTasks
         Start-Sleep -Milliseconds 250
+    }
+    if ($pendingEpochVerifications.Count -gt 0 -or $pendingSegmentVerifications.Count -gt 0 -or
+        @($verificationTasks | Where-Object { $null -ne $_.launch }).Count -gt 0) {
+        throw "Sealed-window verification queue did not drain; no full verification claim is allowed."
     }
     foreach ($arbiter in @($arbiterStates.Values)) {
         $arbiterExit = if ($isContinuous) {
@@ -1624,7 +2194,8 @@ try {
         } else {
             if ($null -ne $arbiter.launch) {
                 if (-not [RawQualificationNative]::WaitForProcessExit($arbiter.launch.ProcessHandle, 30000)) {
-                    $observerFailures.Add("LIVE_ARBITRATION_STOP_DEADLINE_EXCEEDED")
+                    Add-ObserverFailure -Kind ("LIVE_ARBITRATION_{0}" -f $arbiter.symbol) `
+                        -Epoch $arbiter.sequence -Detail "FINAL_STOP_DEADLINE_EXCEEDED"
                     [RawQualificationNative]::TerminateProcessHandle($arbiter.launch.ProcessHandle, 0xEE22)
                     $null = [RawQualificationNative]::WaitForProcessExit($arbiter.launch.ProcessHandle, 30000)
                 }
@@ -1651,16 +2222,32 @@ try {
         # lineage per record; depth = trusted prefixes of the publishing
         # lane); SKIPPED is never a promotion.
         $symbolRoot = Join-Path $runRoot ($states[$arbiter.symbol].Code)
+        $expectedPath = Join-Path $arbiterRoot ("{0}-expected-artifacts.json" -f $arbiter.symbol)
+        # One journal file must stay a one-element list. An if-statement
+        # unwraps it to a string, and StrictMode then has no Count.
+        $expectedJournals = @($(if ($isContinuous) {
+            @(Get-ChildItem -LiteralPath $arbiter.dir -Filter "*-seg-*.jsonl" -File |
+                Sort-Object Name | ForEach-Object { $_.FullName })
+        } else { @($arbiter.journal) }))
+        if ($expectedJournals.Count -eq 0) { throw "Canonical inventory has no journal files." }
+        $null = Write-ArbiterExpectedArtifactInventory -OutputPath $expectedPath `
+            -Artifacts (Get-SymbolArtifactInventory -Symbol $arbiter.symbol) -Journals $expectedJournals
+        $expectedSha = Get-RawQualificationSha256File -Path $expectedPath
         $arbRustReport = Join-Path $arbiterRoot ("{0}-rust-verify.json" -f $arbiter.symbol)
         $arbRustArgs = if ($isContinuous) {
             [string[]]@("--journal-root", $arbiter.dir, "--oracle-artifact", $symbolRoot)
         } else {
             [string[]]@($arbiter.journal, "--oracle-artifact", $symbolRoot)
         }
+        $arbRustArgs += [string[]]@("--expected-artifact-inventory", $expectedPath)
         $arbRust = Invoke-ExactProcess -Executable $liveArbiterVerify -Arguments $arbRustArgs
         $null = Write-RawQualificationDurableNewFile -Path $arbRustReport -Bytes ([Text.UTF8Encoding]::new($false).GetBytes($arbRust.TrimEnd() + "`n"))
         $arbRustValue = $arbRust | ConvertFrom-Json
-        if ($arbRustValue.status -cne "PASS" -or $arbRustValue.oracle_identity -cne "PASS") {
+        if ($arbRustValue.schema -cne "LiveArbitrationVerificationV2" -or
+            $arbRustValue.status -cne "PASS" -or $arbRustValue.oracle_identity -cne "PASS" -or
+            $arbRustValue.artifact_coverage -cne "PASS" -or $arbRustValue.terminal_complete -ne $true -or
+            $arbRustValue.coverage_exhaustive -ne $true -or
+            $arbRustValue.expected_artifact_inventory_sha256 -cne $expectedSha) {
             throw ("Live arbitration Rust oracle verification was not PASS for {0}." -f $arbiter.symbol)
         }
         $arbPythonReport = Join-Path $arbiterRoot ("{0}-python-verify.json" -f $arbiter.symbol)
@@ -1674,11 +2261,16 @@ try {
                 [string[]]@("-B", "-m", "binance_lob.live_arbitration_verify_cli",
                     $arbiter.journal, "--oracle-artifact", $symbolRoot, "--output", $arbPythonReport)
             }
+            $arbPythonArgs += [string[]]@("--expected-artifact-inventory", $expectedPath)
             $null = Invoke-ExactProcess -Executable $python -Arguments $arbPythonArgs
         }
         finally { $env:PYTHONPATH = $oldPythonPath }
         $arbPythonValue = Get-Content -LiteralPath $arbPythonReport -Raw | ConvertFrom-Json
-        if ($arbPythonValue.status -cne "PASS" -or $arbPythonValue.oracle_identity -cne "PASS") {
+        if ($arbPythonValue.schema -cne "LiveArbitrationVerificationV2" -or
+            $arbPythonValue.status -cne "PASS" -or $arbPythonValue.oracle_identity -cne "PASS" -or
+            $arbPythonValue.artifact_coverage -cne "PASS" -or $arbPythonValue.terminal_complete -ne $true -or
+            $arbPythonValue.coverage_exhaustive -ne $true -or
+            $arbPythonValue.expected_artifact_inventory_sha256 -cne $expectedSha) {
             throw ("Live arbitration Python oracle verification was not PASS for {0}." -f $arbiter.symbol)
         }
         $arbiterVerification[$arbiter.symbol] = [ordered]@{
@@ -1696,6 +2288,8 @@ try {
             canonical_gaps = [int]$arbRustValue.gaps
             canonical_segments = [int]$arbRustValue.segments
             exit_code = [int]$arbiterExit
+            expected_artifact_inventory = Get-ServiceRelativePath -Root $runRoot -FullPath $expectedPath
+            expected_artifact_inventory_sha256 = $expectedSha
         }
         $null = Add-ServiceEvent -Channel "SERVICE" -Payload ([ordered]@{
             event = "LIVE_ARBITRATION_VERIFIED"; symbol = $arbiter.symbol
@@ -1710,69 +2304,7 @@ try {
     if (@($processIntervals | Where-Object { $null -eq $_.interval_end_utc }).Count -ne 0) {
         throw "Kernel process inventory contains an unterminated process interval."
     }
-    if (-not $observerSkipped) {
-        $null = [RawQualificationNative]::CloseRetainedProcessHandle($etw)
-        $null = [RawQualificationNative]::CloseRetainedProcessHandle($witness)
-        $etw = $null; $witness = $null
-    }
-
-    if ($observerSkipped) {
-        # TEST-ONLY non-elevated run: the kernel/network observers never ran;
-        # the terminal records that honestly instead of fabricating evidence.
-        $kernelCaptureReport = [ordered]@{
-            schema = "KernelNetworkProductionCaptureV1"; status = "SKIPPED_NOT_ELEVATED"
-            run_id = $observerRunId; skipped_reason = "explicit -SkipKernelObserver test invocation (no elevation)"
-        }
-        $null = Write-RawQualificationDurableNewJson -Path (Join-Path $kernelRoot "kernel-network-capture.json") -Value $kernelCaptureReport
-    } else {
-        if ($etwExitCode -ne 0 -or (Get-Item -LiteralPath $etwErr -ErrorAction Stop).Length -ne 0) {
-            throw "Kernel-Network controller did not seal cleanly."
-        }
-        if ($witnessExitCode -ne 0 -or (Get-Item -LiteralPath $witnessErr -ErrorAction Stop).Length -ne 0) {
-            throw "Independent network witness did not seal cleanly."
-        }
-        $decodedPath = Join-Path $kernelRoot "kernel-network.xml"
-        $decodeOutput = [string[]]@(& $tracerpt $etl -o $decodedPath -of XML -lr -y 2>&1 | ForEach-Object { [string]$_ })
-        $decodeExitCode = [int]$LASTEXITCODE
-        if ($decodeExitCode -ne 0 -or -not (Test-Path -LiteralPath $decodedPath -PathType Leaf)) {
-            throw "tracerpt could not decode Kernel-Network evidence."
-        }
-        $postQueryOutput = [string[]]@(& $logman query -ets $sessionName 2>&1 | ForEach-Object { [string]$_ })
-        $postQueryExitCode = [int]$LASTEXITCODE
-        if ($postQueryExitCode -eq 0) { throw "Kernel-Network session remained orphaned after seal." }
-        $controllerRecords = [object[]]@(Get-Content -LiteralPath $etwOut -ErrorAction Stop | ForEach-Object {
-            $_ | ConvertFrom-Json -ErrorAction Stop
-        })
-        if ($controllerRecords.Count -ne 2) { throw "Kernel-Network controller did not emit exactly READY then SEALED." }
-        $processInventory = [object[]]@($processIntervals | ForEach-Object {
-            [ordered]@{
-                role = [string]$_.role; symbol = $_.symbol; pid = [uint32]$_.pid
-                interval_start_utc = ([DateTimeOffset]$_.interval_start_utc).ToUniversalTime().ToString("o")
-                interval_end_utc = ([DateTimeOffset]$_.interval_end_utc).ToUniversalTime().ToString("o")
-            }
-        })
-        $etlItem = Get-Item -LiteralPath $etl -ErrorAction Stop
-        $xmlItem = Get-Item -LiteralPath $decodedPath -ErrorAction Stop
-        $captureReport = [ordered]@{
-            schema = "KernelNetworkProductionCaptureV1"; run_id = $observerRunId; status = "CANDIDATE"
-            started_utc = $etwStartedUtc.ToUniversalTime().ToString("o")
-            completed_utc = $observationEndUtc.ToUniversalTime().ToString("o")
-            controller_executable = $kernelTrace; controller_sha256 = Get-RawQualificationSha256File -Path $kernelTrace
-            controller_pid = $etwProcessId; session_name = $sessionName
-            controller_exit_code = [int]$etwExitCode; controller_records = $controllerRecords
-            controller_stderr_file = "controller.stderr.txt"; controller_stderr_bytes = [uint64](Get-Item -LiteralPath $etwErr).Length
-            controller_stderr_sha256 = Get-RawQualificationSha256File -Path $etwErr
-            maximum_file_mib = [uint32]$KernelTraceMiB; deadline_s = [uint64]$etwDeadline
-            etl_file = "kernel-network.etl"; etl_bytes = [uint64]$etlItem.Length; etl_sha256 = Get-RawQualificationSha256File -Path $etl
-            decoded_file = "kernel-network.xml"; decoded_bytes = [uint64]$xmlItem.Length; decoded_sha256 = Get-RawQualificationSha256File -Path $decodedPath
-            tracerpt_exit_code = $decodeExitCode; tracerpt_output = $decodeOutput
-            orphan_query_exit_code = $postQueryExitCode; orphan_query_output = $postQueryOutput
-            monitored_processes = $processInventory; selected_event_ids = [uint16[]]@(12,13,14,15,16,17,28,29,30,31,32)
-            raw_packet_payload_capture = $false; diagnostic_only = $true; training_eligible = $false
-            correlation_status = "OPEN_PENDING_INDEPENDENT_VERIFY"
-        }
-        $null = Write-RawQualificationDurableNewJson -Path (Join-Path $kernelRoot "kernel-network-capture.json") -Value $captureReport
-    }
+    if (-not $observerSkipped) { Complete-ServiceObserverReports }
 
     $verification = [Collections.Generic.List[object]]::new()
     foreach ($artifact in $completedArtifacts) {
@@ -1842,16 +2374,7 @@ try {
         "-Action", "Collect", "-EvidenceRoot", $systemRoot, "-RunId", $observerRunId,
         "-StartUtc", $startUtc.ToString("o"), "-EndUtc", $observationEndUtc.ToString("o")
     ))
-    $kernelVerificationPath = Join-Path $verificationRoot "kernel-network.json"
-    $networkVerificationPath = Join-Path $verificationRoot "network-witness.json"
     $systemVerificationPath = Join-Path $verificationRoot "system-evidence.json"
-    if ($observerSkipped) {
-        $kernelVerification = [ordered]@{ status = "SKIPPED_NOT_ELEVATED"; run_id = $observerRunId }
-        $networkVerification = [ordered]@{ status = "SKIPPED_NOT_ELEVATED"; observation_id = $observerRunId }
-    } else {
-        $kernelVerification = Invoke-JsonVerifier -Module "binance_lob.kernel_network_production_verify_cli" -InputRoot $kernelRoot -OutputPath $kernelVerificationPath
-        $networkVerification = Invoke-JsonVerifier -Module "binance_lob.network_witness_verify_cli" -InputRoot $networkRoot -OutputPath $networkVerificationPath
-    }
     $systemVerification = Invoke-JsonVerifier -Module "binance_lob.system_evidence_verify_cli" -InputRoot $systemRoot -OutputPath $systemVerificationPath
     Assert-ServiceImplementationUnchanged
 
@@ -1868,7 +2391,7 @@ try {
         "CAPTURE_COMPLETE_WITH_OBSERVABILITY_FAILURES"
     }
     $terminal = [ordered]@{
-        schema = "HotRedundantQualificationTerminalV1"; status = $status; run_id = $runId
+        schema = "HotRedundantQualificationTerminalV2"; status = $status; run_id = $runId
         started_utc = $startUtc.ToString("o"); finished_utc = $endUtc.ToString("o")
         mode = $Mode; continuous = $isContinuous; epoch_window_s = $EpochWindowSeconds
         time_scale = $TimeScale; stop_requested = $serviceStopRequested
@@ -1883,16 +2406,8 @@ try {
             }
         })
         observer_verification = [ordered]@{
-            kernel_network = if ($observerSkipped) {
-                [ordered]@{ status = "SKIPPED_NOT_ELEVATED"; run_id = $observerRunId }
-            } else {
-                [ordered]@{ path = Get-ServiceRelativePath -Root $runRoot -FullPath $kernelVerificationPath; sha256 = Get-RawQualificationSha256File -Path $kernelVerificationPath; run_id = $kernelVerification.run_id }
-            }
-            network_witness = if ($observerSkipped) {
-                [ordered]@{ status = "SKIPPED_NOT_ELEVATED"; observation_id = $observerRunId }
-            } else {
-                [ordered]@{ path = Get-ServiceRelativePath -Root $runRoot -FullPath $networkVerificationPath; sha256 = Get-RawQualificationSha256File -Path $networkVerificationPath; observation_id = $networkVerification.observation_id }
-            }
+            kernel_network = [object[]]@($kernelWindows)
+            network_witness = [object[]]@($networkWindows)
             system_evidence = [ordered]@{ path = Get-ServiceRelativePath -Root $runRoot -FullPath $systemVerificationPath; sha256 = Get-RawQualificationSha256File -Path $systemVerificationPath; run_id = $systemVerification.run_id }
             live_arbitration = [ordered]@{ btcusdt = $arbiterVerification["BTCUSDT"]; ethusdt = $arbiterVerification["ETHUSDT"] }
         }
@@ -1956,6 +2471,32 @@ catch {
     $failureExitCode = 2
 }
 finally {
+    foreach ($window in @($observerWindows)) {
+        foreach ($path in @($window.kernelStop, $window.networkStop)) {
+            if (-not (Test-Path -LiteralPath $path) -and (Test-Path -LiteralPath (Split-Path $path -Parent))) {
+                try { $null = Write-RawQualificationDurableNewFile -Path $path -Bytes ([byte[]]@()) } catch {}
+            }
+        }
+        foreach ($kind in @("kernel", "network")) {
+            $launch = $window.$kind
+            if ($null -ne $launch -and $launch.ProcessHandle -ne [IntPtr]::Zero) {
+                if (-not [RawQualificationNative]::WaitForProcessExit($launch.ProcessHandle, 10000)) {
+                    $null = [RawQualificationNative]::TerminateProcessHandle($launch.ProcessHandle, 0xEE32)
+                    $null = [RawQualificationNative]::WaitForProcessExit($launch.ProcessHandle, 5000)
+                }
+                $null = [RawQualificationNative]::CloseRetainedProcessHandle($launch)
+                $window.$kind = $null
+            }
+        }
+        # A nonce alone is not ownership proof: a collision can make startup
+        # fail before READY. Stop only a session bound by our exact READY.
+        if (-not $terminalWritten) {
+            try {
+                Stop-OwnedKernelSession -Window $window -Reason "SERVICE_FINALLY" `
+                    -RecordServiceEvent ($null -ne $journal -and -not $journal.Closed)
+            } catch { [Console]::Error.WriteLine(("Owned kernel cleanup evidence failed: {0}" -f $_)) }
+        }
+    }
     if ($null -ne $states) {
         foreach ($state in $states.Values) {
             if ($null -ne $state.Launch -and $state.Launch.ProcessHandle -ne [IntPtr]::Zero) {

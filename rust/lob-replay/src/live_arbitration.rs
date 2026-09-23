@@ -389,11 +389,13 @@ pub fn rebuild_trade_identity_from_journal(
         if read == 0 {
             break;
         }
-        let line = if buf.last() == Some(&b'\n') {
-            &buf[..read - 1]
-        } else {
-            &buf[..read]
-        };
+        // The chain scan has already validated the complete prefix and the
+        // resume declaration of any torn suffix. Rebuild only committed
+        // newline-terminated records, including when the suffix cuts UTF-8.
+        if buf.last() != Some(&b'\n') {
+            break;
+        }
+        let line = &buf[..read - 1];
         if line.is_empty() {
             continue;
         }
@@ -448,6 +450,10 @@ pub struct TradeUnionState {
     consumed_floor: Option<u64>,
     /// Retained identity of published trades (bounded by `PUBLISHED_CAP`).
     published: std::collections::BTreeMap<u64, String>,
+    /// Late identities are ordered by discovery, not by ID. The journal is
+    /// their durable authority; resume restores them separately from the
+    /// monotone publication identity log.
+    corrected: std::collections::BTreeMap<u64, String>,
     /// Durable identity log consulted when the bounded cache no longer holds
     /// an ID (ADR-17 B4): eviction and restarts must not degrade a
     /// post-publish contradiction into `Unknown`.
@@ -480,6 +486,22 @@ impl TradeUnionState {
     /// Releases the durable identity log (e.g. to rebuild it on resume).
     pub fn take_identity_log(&mut self) -> Option<TradeIdentityLog> {
         self.durable.take()
+    }
+
+    pub fn restore_startup_floor(&mut self, floor: u64) {
+        self.consumed_floor = Some(floor);
+    }
+
+    pub fn restore_corrected_identity(&mut self, id: u64, digest: String) -> Result<()> {
+        if self
+            .corrected
+            .get(&id)
+            .is_some_and(|previous| previous != &digest)
+        {
+            return Err("corrected trade identity conflicts on recovery".to_owned());
+        }
+        self.corrected.insert(id, digest);
+        Ok(())
     }
 
     pub fn last_published_id(&self) -> Option<u64> {
@@ -602,6 +624,20 @@ impl TradeUnionState {
             return Ok(TradeUnionDisposition::Buffered);
         }
         if self.last_published_id.is_some_and(|last| id <= last) {
+            if let Some(digest) = self.corrected.get(&id) {
+                return Ok(if digest == &observation.observation_sha256 {
+                    TradeUnionDisposition::Late {
+                        observation: observation.clone(),
+                        kind: LateCorrectionKind::Duplicate,
+                    }
+                } else {
+                    TradeUnionDisposition::Conflict {
+                        trade_id: id,
+                        first_digest: digest.clone(),
+                        second_digest: observation.observation_sha256.clone(),
+                    }
+                });
+            }
             // Post-publish classification against the RETAINED IDENTITY
             // (TigerBeetle pattern): same ID with the same content is the
             // sibling's identical duplicate; same ID with different content
@@ -639,10 +675,14 @@ impl TradeUnionState {
                         first_digest: digest,
                         second_digest: observation.observation_sha256.clone(),
                     },
-                    _ => TradeUnionDisposition::Late {
-                        observation: observation.clone(),
-                        kind: LateCorrectionKind::Unknown,
-                    },
+                    _ => {
+                        self.corrected
+                            .insert(id, observation.observation_sha256.clone());
+                        TradeUnionDisposition::Late {
+                            observation: observation.clone(),
+                            kind: LateCorrectionKind::Unknown,
+                        }
+                    }
                 },
             });
         }
@@ -1048,6 +1088,8 @@ pub struct LiveArbitrationScanV1 {
     pub symbol: Option<String>,
     /// Number of journal segment files walked (1 for a single file).
     pub segments: u64,
+    /// True only when an actual terminal record was validated in this prefix.
+    pub terminal_seen: bool,
 }
 
 /// Shared audit state carried across a whole journal walk (one file or a
@@ -1067,6 +1109,7 @@ struct JournalAuditState {
     last_depth_sequence: Option<u64>,
     exact_next_depth: Option<u64>,
     published: std::collections::BTreeMap<u64, String>,
+    corrected: std::collections::BTreeMap<u64, String>,
     started_seen: bool,
     terminal_seen: bool,
     trade_floor: Option<u64>,
@@ -1322,6 +1365,9 @@ fn apply_audit_record(
             if state.last_trade_id.is_none_or(|last| id > last) {
                 return Err("trade late correction is not below the canonical position".to_owned());
             }
+            if !state.preset_context && state.trade_floor.is_some_and(|floor| id <= floor) {
+                return Err("trade late correction is at or below the startup floor".to_owned());
+            }
             let kind = envelope.body.payload.get("kind").and_then(Value::as_str);
             let observation_sha256 = payload_hex64(
                 &envelope.body.payload,
@@ -1334,7 +1380,11 @@ fn apply_audit_record(
                     // identity of the same ID (ADR-17 B5: corrections are
                     // materialized against the retained identity, never
                     // accepted by an ID bound alone).
-                    match state.published.get(&id) {
+                    match state
+                        .published
+                        .get(&id)
+                        .or_else(|| state.corrected.get(&id))
+                    {
                         Some(published_digest) if published_digest == observation_sha256 => {}
                         Some(_) => {
                             return Err(
@@ -1355,12 +1405,13 @@ fn apply_audit_record(
                     // published: it must not exist in the published set (a
                     // retained identity would have classified it as
                     // duplicate or conflict).
-                    if state.published.contains_key(&id) {
+                    if state.published.contains_key(&id) || state.corrected.contains_key(&id) {
                         return Err(
                             "trade late correction kind=unknown contradicts the published identity"
                                 .to_owned(),
                         );
                     }
+                    state.corrected.insert(id, observation_sha256.to_owned());
                 }
                 _ => {
                     // Schema compatibility policy (ADR-17 B5): corrections
@@ -1606,6 +1657,7 @@ fn finish_audit(state: &JournalAuditState, incremental: bool) -> Result<LiveArbi
         trade_floor: state.trade_floor,
         symbol: state.symbol.clone(),
         segments: state.segments,
+        terminal_seen: state.terminal_seen,
     })
 }
 
@@ -1667,6 +1719,25 @@ pub fn scan_live_arbitration_journal_set(paths: &[PathBuf]) -> Result<LiveArbitr
         }
     }
     finish_audit(&state, false)
+}
+
+/// Audits a live resume-chained prefix from STARTED, preserving publication
+/// and correction identities across segments. Torn predecessor tails are
+/// accepted only when the next RESUMED declares the exact measured bytes.
+/// The returned clean/tail values describe the final segment; they do not
+/// imply a terminal, an immutable input set or exhaustive raw coverage.
+pub fn scan_live_arbitration_journal_set_incremental(
+    paths: &[PathBuf],
+) -> Result<(LiveArbitrationScanV1, bool, u64)> {
+    if paths.is_empty() {
+        return Err("arbitration journal set is empty".to_owned());
+    }
+    let mut state = JournalAuditState::default();
+    let mut final_tail = (true, 0);
+    for path in paths {
+        final_tail = walk_audit_file(path, true, &mut state, true)?;
+    }
+    Ok((finish_audit(&state, true)?, final_tail.0, final_tail.1))
 }
 
 /// Closed audit of ONE resume-chained tail segment with a supplied chain
@@ -1971,6 +2042,59 @@ mod tests {
                 observation: trade_observation(101, "s", 2, "d101"),
                 kind: LateCorrectionKind::Duplicate,
             }
+        );
+    }
+
+    #[test]
+    fn corrected_identity_is_unique_and_conflicts_after_recovery() {
+        let mut union = TradeUnionState::new();
+        union.restore_published_floor(450).unwrap();
+        union.restore_startup_floor(100);
+        let observation = trade_observation(150, "p", 0, "digest150");
+        assert!(matches!(
+            union.observe(CaptureLane::Primary, &observation).unwrap(),
+            TradeUnionDisposition::Late {
+                kind: LateCorrectionKind::Unknown,
+                ..
+            }
+        ));
+        assert!(matches!(
+            union.observe(CaptureLane::Shadow, &observation).unwrap(),
+            TradeUnionDisposition::Late {
+                kind: LateCorrectionKind::Duplicate,
+                ..
+            }
+        ));
+        let mut resumed = TradeUnionState::new();
+        resumed.restore_published_floor(450).unwrap();
+        resumed.restore_startup_floor(100);
+        resumed
+            .restore_corrected_identity(150, "digest150".to_owned())
+            .unwrap();
+        assert!(matches!(
+            resumed.observe(CaptureLane::Shadow, &observation).unwrap(),
+            TradeUnionDisposition::Late {
+                kind: LateCorrectionKind::Duplicate,
+                ..
+            }
+        ));
+        assert!(matches!(
+            resumed
+                .observe(
+                    CaptureLane::Shadow,
+                    &trade_observation(150, "s", 1, "changed")
+                )
+                .unwrap(),
+            TradeUnionDisposition::Conflict { trade_id: 150, .. }
+        ));
+        assert_eq!(
+            resumed
+                .observe(
+                    CaptureLane::Primary,
+                    &trade_observation(90, "p", 2, "outside")
+                )
+                .unwrap(),
+            TradeUnionDisposition::Buffered
         );
     }
 
@@ -2949,6 +3073,46 @@ mod tests {
         let broken = bytes.replacen("\"trade_floor\":100", "\"trade_floor\":99", 1);
         std::fs::write(&wrong_floor, broken).unwrap();
         assert!(scan_live_arbitration_journal_set(&[segment_one.clone(), wrong_floor]).is_err());
+    }
+
+    #[test]
+    fn live_journal_set_preserves_identity_and_checks_predecessor_tail() {
+        let dir = tempfile::tempdir().unwrap();
+        let first = dir.path().join("0.jsonl");
+        let second = dir.path().join("1.jsonl");
+        let wrong = dir.path().join("wrong.jsonl");
+        let mut writer = LiveArbitrationJournalWriter::create(&first).unwrap();
+        writer.append(0, "LIVE", serde_json::json!({"event":"ARBITRATION_STARTED","symbol":"BTCUSDT","trade_floor":10})).unwrap();
+        writer.append(1, "LIVE", serde_json::json!({"event":"TRADE_OBSERVATION","trade_id":20,"lane":"PRIMARY","record_sha256":"a".repeat(64),"observation_sha256":"b".repeat(64)})).unwrap();
+        writer.append(2, "LIVE", serde_json::json!({"event":"TRADE_LATE_CORRECTION","trade_id":15,"kind":"unknown","lane":"SHADOW","record_sha256":"c".repeat(64),"observation_sha256":"d".repeat(64)})).unwrap();
+        drop(writer);
+        let (scan, _, _) = scan_live_arbitration_journal_incremental(&first).unwrap();
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(&first)
+            .unwrap()
+            .write_all(b"torn1")
+            .unwrap();
+        for (path, previous_tail_bytes) in [(&second, 5), (&wrong, 4)] {
+            let mut writer = LiveArbitrationJournalWriter::create(path).unwrap();
+            writer.append(0, "LIVE", serde_json::json!({"event":"ARBITRATION_RESUMED","symbol":"BTCUSDT","mode":"CONTINUOUS","trade_floor":20,"previous_journal_sha256":scan.last_record_sha256,"previous_tail_bytes":previous_tail_bytes})).unwrap();
+            writer.append(1, "LIVE", serde_json::json!({"event":"TRADE_LATE_CORRECTION","trade_id":15,"kind":"duplicate","lane":"PRIMARY","record_sha256":"e".repeat(64),"observation_sha256":"d".repeat(64)})).unwrap();
+            drop(writer);
+            std::fs::OpenOptions::new()
+                .append(true)
+                .open(path)
+                .unwrap()
+                .write_all(b"tail")
+                .unwrap();
+        }
+        let (scan, clean, tail) =
+            scan_live_arbitration_journal_set_incremental(&[first.clone(), second]).unwrap();
+        assert!(!clean);
+        assert_eq!(tail, 4);
+        assert!(!scan.terminal_seen);
+        assert_eq!(scan.trade_floor, Some(10));
+        assert_eq!(scan.late_corrections, 2);
+        assert!(scan_live_arbitration_journal_set_incremental(&[first, wrong]).is_err());
     }
 
     #[test]

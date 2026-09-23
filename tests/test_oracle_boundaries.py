@@ -20,11 +20,13 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import struct
 import tempfile
 import unittest
 from base64 import b64encode
 from pathlib import Path
+from unittest.mock import patch
 
 from binance_lob.live_arbitration_verify_cli import (
     ZERO_DIGEST,
@@ -388,6 +390,92 @@ class ClosedOracleBoundaryTests(unittest.TestCase):
             canonical, {"p": {}, "s": {}},
             tolerant_lanes=False, enforce_final_boundary=True,
         )
+
+
+class SealedPrefixDepthPoolTests(unittest.TestCase):
+    def test_several_sealed_generations_share_the_closed_audit_pool(self):
+        root = Path(tempfile.mkdtemp(prefix="sealed-prefix-pool-"))
+        artifact = _build_artifact(root)
+        for generation in artifact.glob("*/*/generations/*"):
+            (generation / "generation.json").write_text(
+                '{"status":"COMPLETE","failure":null}', encoding="utf-8"
+            )
+        from binance_lob.live_arbitration_verify_cli import oracle_depth_by_lane
+
+        closed = oracle_depth_by_lane(artifact, tolerate_missing_ack=False)
+        entered: list[int] = []
+
+        class _Pool:
+            def __init__(self, size: int):
+                entered.append(size)
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def map(self, function, items):
+                return [function(item) for item in items]
+
+        class _Context:
+            def Pool(self, size: int):
+                return _Pool(size)
+
+        with patch.object(os, "cpu_count", return_value=4), patch(
+            "multiprocessing.get_context", return_value=_Context()
+        ):
+            prefix = oracle_depth_by_lane(artifact, tolerate_missing_ack=True)
+        self.assertEqual(prefix, closed)
+        self.assertGreaterEqual(len(entered), 1)
+
+
+class SealedOracleCacheTests(unittest.TestCase):
+    def test_a_second_read_does_not_reopen_sealed_trade_bytes(self):
+        root = Path(tempfile.mkdtemp(prefix="sealed-oracle-cache-"))
+        artifact = _build_artifact(root)
+        for generation in artifact.glob("*/*/generations/*"):
+            (generation / "generation.json").write_text(
+                '{"status":"COMPLETE","failure":null}', encoding="utf-8"
+            )
+        cache = root / "cache"
+        from binance_lob import live_arbitration_verify_cli as verifier
+
+        first = verifier.oracle_trades_union(artifact, cache_dir=cache)
+        calls: list[str] = []
+        real = verifier._stream_records
+
+        def counting(generation, stream, tolerate_missing_ack=False):
+            calls.append(stream)
+            return real(generation, stream, tolerate_missing_ack)
+
+        with patch.object(verifier, "_stream_records", counting):
+            second = verifier.oracle_trades_union(artifact, cache_dir=cache)
+        self.assertEqual(first, second)
+        self.assertEqual(calls, [])
+
+        cache_file = next((cache / "trade").glob("*.json"))
+        stored = json.loads(cache_file.read_text(encoding="utf-8"))
+        self.assertEqual(stored["key"], cache_file.stem)
+        stored["key"] = "0" * 64
+        stored["rows"][0]["trade_id"] = 1
+        cache_file.write_text(json.dumps(stored), encoding="utf-8")
+        with patch.object(verifier, "_stream_records", counting):
+            repaired = verifier.oracle_trades_union(artifact, cache_dir=cache)
+        self.assertEqual(repaired, first)
+        self.assertTrue(calls)
+        calls.clear()
+
+        trade_file = next(artifact.glob("*/*/generations/*/trade/segment-*.bnraw"))
+        payload = bytearray(trade_file.read_bytes())
+        payload[-1] ^= 0x01
+        trade_file.write_bytes(payload)
+        with patch.object(verifier, "_stream_records", counting):
+            try:
+                verifier.oracle_trades_union(artifact, cache_dir=cache)
+            except Exception:
+                calls.append("recomputed")
+        self.assertTrue(calls)
 
 
 class ClosedOracleEndToEndTests(unittest.TestCase):

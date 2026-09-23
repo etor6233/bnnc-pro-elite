@@ -75,6 +75,27 @@ pub struct DepthObservationCursor {
 }
 
 impl DepthObservationCursor {
+    /// Initializes the same exact book as window materialization, without
+    /// replaying the prefix. The caller must feed its verified records in
+    /// order; each record's symbol, stream and epoch are checked on apply.
+    pub fn from_snapshot(
+        snapshot: &RawRecordEnvelopeV1,
+        first: &RawRecordEnvelopeV1,
+    ) -> Result<Self> {
+        if !first.frame.stream.contains("@depth") || snapshot.frame.symbol != first.frame.symbol {
+            return Err("depth cursor snapshot/stream identity mismatch".to_owned());
+        }
+        let mut cursor = Self {
+            book: LocalOrderBook::new(&first.frame.symbol)?,
+            symbol: first.frame.symbol.clone(),
+            stream: first.frame.stream.clone(),
+            connection_epoch: first.frame.connection_epoch.clone(),
+            live_started: false,
+        };
+        cursor.book.load_snapshot(&snapshot.frame.payload)?;
+        Ok(cursor)
+    }
+
     pub fn from_durable_prefix(
         snapshot_path: &Path,
         depth_path: &Path,
@@ -85,18 +106,11 @@ impl DepthObservationCursor {
             return Err("depth cursor requires one snapshot".to_owned());
         }
         let records = read_raw_records_through_offset(depth_path, durable_through_offset)?;
-        let (symbol, stream, connection_epoch) = identity(&records)?;
+        let (symbol, stream, _) = identity(&records)?;
         if !stream.contains("@depth") || snapshots[0].frame.symbol != symbol {
             return Err("depth cursor snapshot/stream identity mismatch".to_owned());
         }
-        let mut cursor = Self {
-            book: LocalOrderBook::new(&symbol)?,
-            symbol,
-            stream,
-            connection_epoch,
-            live_started: false,
-        };
-        cursor.book.load_snapshot(&snapshots[0].frame.payload)?;
+        let mut cursor = Self::from_snapshot(&snapshots[0], &records[0])?;
         for record in &records {
             cursor.apply_record(record)?;
         }
@@ -115,6 +129,9 @@ impl DepthObservationCursor {
             || record.frame.connection_epoch != self.connection_epoch
         {
             return Err("depth cursor record identity mismatch".to_owned());
+        }
+        if server_shutdown_payload(&record.frame.payload)? {
+            return Ok(None);
         }
         let (first_sequence, final_sequence) = depth_ids(&record.frame.payload)?;
         match self.book.apply_depth(&record.frame.payload)? {

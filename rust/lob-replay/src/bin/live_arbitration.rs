@@ -35,7 +35,7 @@ use lob_replay::{
     RawRecordEnvelopeV1, RawSegmentGenesisV1, Result, read_raw_record_range, read_raw_records,
     read_raw_segment_records,
 };
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::env;
 use std::fs;
 use std::io::BufRead;
@@ -135,6 +135,12 @@ struct RecoveredArbitrationState {
     gaps: u64,
     late_corrections: u64,
     last_trade_id: Option<u64>,
+    startup_trade_floor: u64,
+    corrected_identities: BTreeMap<u64, String>,
+    /// Duplicate corrections already durable in the recovered journal.
+    /// A later resume must not append the same (trade, lane, digest) again.
+    journaled_duplicate_corrections: BTreeSet<(u64, String, String)>,
+    excluded_tail_origins: BTreeSet<String>,
     canonical_position: CanonicalDepthPosition,
     serving_lane: CaptureLane,
     /// Last complete record SHA-256 of the previous segment (resume chain).
@@ -168,6 +174,27 @@ fn generation_terminal_complete(generation_dir: &Path) -> Result<bool> {
         Err(_) => return Ok(false),
     };
     Ok(value["status"].as_str() == Some("COMPLETE") && value["failure"].is_null())
+}
+
+/// A capture generation that already committed `status: FAILED` with
+/// `snapshot: null` will never gain `snapshot.bnraw`. That is a finished
+/// declaration, not the race where a live writer has not created the file
+/// yet. Absence of `generation.json`, a partial body, or any other status
+/// stays unproven and must keep failing closed.
+fn generation_terminal_failed_without_snapshot(generation_dir: &Path) -> Result<bool> {
+    let path = generation_dir.join("generation.json");
+    if !path.is_file() {
+        return Ok(false);
+    }
+    let bytes = fs::read(&path).map_err(|error| format!("read {}: {error}", path.display()))?;
+    let value: serde_json::Value = match serde_json::from_slice(&bytes) {
+        Ok(value) => value,
+        Err(_) => return Ok(false),
+    };
+    Ok(value["status"].as_str() == Some("FAILED")
+        && value
+            .get("snapshot")
+            .is_some_and(|snapshot| snapshot.is_null()))
 }
 
 /// True when a lane stream directory is fully sealed (no in-flight
@@ -280,6 +307,10 @@ fn recover_arbitration_state_opt(
         gaps: scan.gaps,
         late_corrections: scan.late_corrections,
         last_trade_id: scan.last_trade_id,
+        startup_trade_floor: scan.trade_floor.unwrap_or(0),
+        corrected_identities: BTreeMap::new(),
+        journaled_duplicate_corrections: BTreeSet::new(),
+        excluded_tail_origins: BTreeSet::new(),
         canonical_position: CanonicalDepthPosition {
             final_sequence: None,
             digest: None,
@@ -293,19 +324,66 @@ fn recover_arbitration_state_opt(
     // Measure the last segment's torn tail (0 when it ended cleanly): the
     // resumed generation declares exactly these bytes.
     recovered.previous_tail_bytes = measure_torn_tail(last_segment)?;
-    // Canonical depth cursor + serving lane from the last segment.
-    {
-        let file = fs::File::open(last_segment)
-            .map_err(|error| format!("open {}: {error}", last_segment.display()))?;
-        let reader = std::io::BufReader::new(file);
-        for line in reader.lines() {
-            let line = line.map_err(|error| format!("read journal line: {error}"))?;
+    // Identity, exclusion decisions and the depth cursor belong to the
+    // whole validated chain. Read complete byte lines only: a crash may
+    // leave an incomplete UTF-8 code point, not merely incomplete JSON.
+    for segment in &segments {
+        let file = fs::File::open(segment)
+            .map_err(|error| format!("open {}: {error}", segment.display()))?;
+        let mut reader = std::io::BufReader::new(file);
+        let mut line = Vec::new();
+        loop {
+            line.clear();
+            if reader
+                .read_until(b'\n', &mut line)
+                .map_err(|error| format!("read journal: {error}"))?
+                == 0
+            {
+                break;
+            }
+            if line.last() != Some(&b'\n') {
+                break;
+            }
+            line.pop();
             if line.is_empty() {
                 continue;
             }
             let envelope: serde_json::Value =
-                serde_json::from_str(&line).map_err(|error| format!("journal JSON: {error}"))?;
+                serde_json::from_slice(&line).map_err(|error| format!("journal JSON: {error}"))?;
             let payload = &envelope["body"]["payload"];
+            if payload["event"] == "TRADE_LATE_CORRECTION" && payload["kind"] == "unknown" {
+                let id = payload["trade_id"]
+                    .as_u64()
+                    .ok_or("correction identity missing ID")?;
+                let digest = payload["observation_sha256"]
+                    .as_str()
+                    .ok_or("correction identity missing digest")?;
+                recovered.corrected_identities.insert(id, digest.to_owned());
+            }
+            if payload["event"] == "TRADE_LATE_CORRECTION" && payload["kind"] == "duplicate" {
+                let id = payload["trade_id"]
+                    .as_u64()
+                    .ok_or("duplicate correction missing ID")?;
+                let lane = payload["lane"]
+                    .as_str()
+                    .ok_or("duplicate correction missing lane")?;
+                let digest = payload["observation_sha256"]
+                    .as_str()
+                    .ok_or("duplicate correction missing digest")?;
+                recovered.journaled_duplicate_corrections.insert((
+                    id,
+                    lane.to_owned(),
+                    digest.to_owned(),
+                ));
+            }
+            if payload["event"] == "TRADE_LAG" && payload["reason"] == "predecessor_lag" {
+                if !payload["origin"].is_object() {
+                    return Err("predecessor lag missing origin identity".to_owned());
+                }
+                recovered
+                    .excluded_tail_origins
+                    .insert(payload["origin"].to_string());
+            }
             match payload.get("event").and_then(serde_json::Value::as_str) {
                 Some("DEPTH_OBSERVATION") => {
                     recovered.canonical_position.final_sequence = payload
@@ -809,6 +887,23 @@ impl StreamFollowState {
         Ok(state)
     }
 
+    /// Depth follower with no records. Used only when a terminal FAILED
+    /// generation has no snapshot and its depth stream cannot be bound;
+    /// trade records of that generation stay readable.
+    fn unbound(stream_dir: &Path, stream_suffix: &'static str) -> Self {
+        Self {
+            stream_dir: stream_dir.to_path_buf(),
+            stream_suffix,
+            records: Vec::new(),
+            follower: None,
+            genesis: None,
+            segment_index: 0,
+            segment_record_start: 0,
+            last_durable_offset: 8,
+            poisoned: false,
+        }
+    }
+
     /// Appends newly BNACK-authorized records and follows segment seals.
     /// Returns the number of new durable records.  Any corruption poisons
     /// this follower.
@@ -1080,6 +1175,11 @@ struct LaneBinding {
     /// the canonical view (bounded; the overflow drops only frames that are
     /// duplicates of already-published ones or precede any provable switch).
     pending_depth: VecDeque<CanonicalObservationV1>,
+    /// Exact consumed boundary evidence, independent of unpublished work.
+    /// A binding owns one generation, so replacement invalidates the witness.
+    depth_convergence_witness: Option<CanonicalObservationV1>,
+    depth_switch_replay: Option<DepthSwitchReplay>,
+    depth_switch_pending: bool,
 }
 
 impl LaneBinding {
@@ -1098,10 +1198,18 @@ impl LaneBinding {
     /// needs but the replay does not).
     fn bind_generation(_campaign: &Path, generation: &Path) -> Result<Self> {
         let snapshot_path = generation.join("snapshot.bnraw");
-        if !snapshot_path.is_file() {
+        let failed_without_snapshot =
+            !snapshot_path.is_file() && generation_terminal_failed_without_snapshot(generation)?;
+        if !snapshot_path.is_file() && !failed_without_snapshot {
             return Err("lane generation lacks a snapshot".to_owned());
         }
-        let depth = StreamFollowState::open(&generation.join("depth"), "@depth")?;
+        let depth = match StreamFollowState::open(&generation.join("depth"), "@depth") {
+            Ok(depth) => depth,
+            Err(_) if failed_without_snapshot => {
+                StreamFollowState::unbound(&generation.join("depth"), "@depth")
+            }
+            Err(error) => return Err(error),
+        };
         let trade = StreamFollowState::open(&generation.join("trade"), "@trade")?;
         Ok(Self {
             generation_dir: generation.to_path_buf(),
@@ -1112,6 +1220,9 @@ impl LaneBinding {
             trade_consumed: 0,
             depth_cursor: None,
             pending_depth: VecDeque::new(),
+            depth_convergence_witness: None,
+            depth_switch_replay: None,
+            depth_switch_pending: false,
         })
     }
 
@@ -1119,6 +1230,9 @@ impl LaneBinding {
     /// prefix; the prefix itself is silently consumed (it precedes the
     /// arbiter's own start and is never republished).
     fn bootstrap_depth(&mut self) -> Result<()> {
+        self.depth_switch_replay = None;
+        self.depth_switch_pending = false;
+        self.depth_convergence_witness = None;
         let snapshots = read_raw_records(&self.snapshot_path)?;
         if snapshots.len() != 1 {
             return Err("depth snapshot must contain exactly one record".to_owned());
@@ -1224,7 +1338,12 @@ impl LaneBinding {
     /// discarded by a queue limit.
     fn apply_new_depth(&mut self) -> Result<usize> {
         let mut applied = 0;
-        while self.depth_consumed < self.depth.records().len() {
+        let started = Instant::now();
+        let mut processed = 0;
+        while self.depth_consumed < self.depth.records().len()
+            && processed < DEPTH_SWITCH_RECORD_BUDGET
+            && (processed == 0 || started.elapsed() < DEPTH_SWITCH_TIME_BUDGET)
+        {
             let record = self.depth.records()[self.depth_consumed].clone();
             self.depth_consumed += 1;
             let cursor = self
@@ -1235,8 +1354,34 @@ impl LaneBinding {
                 self.pending_depth.push_back(observation);
                 applied += 1;
             }
+            processed += 1;
         }
         Ok(applied)
+    }
+
+    fn trim_depth_history(&mut self, canonical_final: u64, gap_floor: Option<u64>) {
+        if let Some(witness) = self
+            .pending_depth
+            .iter()
+            .find(|observation| observation.final_sequence == canonical_final)
+        {
+            self.depth_convergence_witness = Some(witness.clone());
+        } else if self
+            .depth_convergence_witness
+            .as_ref()
+            .is_some_and(|witness| witness.final_sequence != canonical_final)
+        {
+            self.depth_convergence_witness = None;
+        }
+        if self
+            .depth_convergence_witness
+            .as_ref()
+            .is_some_and(|witness| gap_floor.is_some_and(|floor| witness.final_sequence <= floor))
+        {
+            self.depth_convergence_witness = None;
+        }
+        trim_pending_depth(&mut self.pending_depth, canonical_final);
+        trim_pending_depth_floor(&mut self.pending_depth, gap_floor);
     }
 
     /// The snapshot's `lastUpdateId` (the book state this generation starts
@@ -1287,16 +1432,126 @@ fn trim_pending_depth_floor(
     }
 }
 
-/// Deep-lag fallback: re-materializes the sibling's full window against its
-/// snapshot (O(prefix); used only when the bounded pending trail no longer
-/// contains the canonical position).
-fn materialize_sibling_window(binding: &LaneBinding) -> Result<Vec<CanonicalObservationV1>> {
-    let snapshots = read_raw_records(&binding.snapshot_path)?;
-    if snapshots.len() != 1 {
-        return Err("sibling depth snapshot must contain exactly one record".to_owned());
+// Scheduling quotas for exact depth application and switch proof. They do
+// not bound snapshot/raw I/O, one book digest or journal sync latency.
+const DEPTH_SWITCH_RECORD_BUDGET: usize = 128;
+const DEPTH_SWITCH_TIME_BUDGET: Duration = Duration::from_millis(10);
+
+/// One binding owns one snapshot and generation. The replay cursor survives
+/// polls; exhausting a quota is PENDING, never evidence of divergence.
+struct DepthSwitchReplay {
+    cursor: DepthObservationCursor,
+    consumed: usize,
+    target: u64,
+    witness: Option<CanonicalObservationV1>,
+    tail: VecDeque<CanonicalObservationV1>,
+}
+
+fn replay_sibling_slice(
+    binding: &mut LaneBinding,
+    canonical_final: u64,
+    canonical_digest: &str,
+    record_budget: usize,
+) -> Result<Option<Vec<CanonicalObservationV1>>> {
+    binding.depth_switch_pending = false;
+    if binding
+        .depth_switch_replay
+        .as_ref()
+        .is_some_and(|replay| replay.target > canonical_final)
+    {
+        binding.depth_switch_replay = None;
     }
-    let records = binding.depth.records().to_vec();
-    materialize_depth_record_window(&snapshots[0], &records)
+    if binding.depth_switch_replay.is_none() {
+        let snapshots = read_raw_records(&binding.snapshot_path)?;
+        if snapshots.len() != 1 {
+            return Err("sibling depth snapshot must contain exactly one record".to_owned());
+        }
+        let Some(first) = binding.depth.records().first() else {
+            return Ok(None);
+        };
+        binding.depth_switch_replay = Some(DepthSwitchReplay {
+            cursor: DepthObservationCursor::from_snapshot(&snapshots[0], first)?,
+            consumed: 0,
+            target: canonical_final,
+            witness: None,
+            tail: VecDeque::new(),
+        });
+    }
+    let replay = binding
+        .depth_switch_replay
+        .as_mut()
+        .expect("replay initialized");
+    // At most one previous slice is retained. A new canonical position may
+    // consume it but never silently discards work above the new position.
+    replay.target = canonical_final;
+    if replay
+        .witness
+        .as_ref()
+        .is_some_and(|obs| obs.final_sequence != canonical_final)
+    {
+        replay.witness = None;
+    }
+    while replay
+        .tail
+        .front()
+        .is_some_and(|obs| obs.final_sequence <= canonical_final)
+    {
+        let observation = replay.tail.pop_front().expect("front just checked");
+        if observation.final_sequence == canonical_final {
+            replay.witness = Some(observation);
+        }
+    }
+    let started = Instant::now();
+    let mut processed = 0;
+    while replay.consumed < binding.depth.records().len()
+        && processed < record_budget
+        && (processed == 0 || started.elapsed() < DEPTH_SWITCH_TIME_BUDGET)
+        && replay.tail.len() < DEPTH_SWITCH_RECORD_BUDGET
+    {
+        let record = &binding.depth.records()[replay.consumed];
+        if replay.consumed > 0
+            && binding.depth.records()[replay.consumed - 1]
+                .frame
+                .frame_index
+                .checked_add(1)
+                != Some(record.frame.frame_index)
+        {
+            return Err("sibling replay frame gap or duplicate".to_owned());
+        }
+        if let Some(observation) = replay.cursor.apply_record(record)? {
+            if observation.final_sequence == canonical_final {
+                replay.witness = Some(observation);
+            } else if observation.final_sequence > canonical_final {
+                replay.tail.push_back(observation);
+            }
+        }
+        replay.consumed += 1;
+        processed += 1;
+    }
+    let converged = replay
+        .witness
+        .as_ref()
+        .is_some_and(|obs| obs.observation_sha256 == canonical_digest);
+    if converged && !replay.tail.is_empty() {
+        // Transfer the exact replay cursor to the binding. Unprocessed raw
+        // records remain owned and apply_new_depth resumes them in slices;
+        // a truncated returned tail must never skip the historical remainder.
+        let replay = binding
+            .depth_switch_replay
+            .take()
+            .expect("replay initialized");
+        let tail = replay.tail.iter().cloned().collect();
+        binding.depth_consumed = replay.consumed;
+        binding.depth_cursor = Some(replay.cursor);
+        binding.depth_convergence_witness = replay.witness;
+        binding.pending_depth = replay.tail;
+        return Ok(Some(tail));
+    }
+    // Once an observation passed the target, no later monotone observation
+    // can establish an exact boundary that was absent or had another digest.
+    binding.depth_switch_pending =
+        replay.tail.is_empty() && replay.consumed < binding.depth.records().len();
+    Ok(None)
 }
 
 /// Dual-loss boundary: publishes the typed gap with the REAL canonical
@@ -1411,10 +1666,19 @@ fn publish_pending_depth(
     canonical_position: &mut CanonicalDepthPosition,
     depth_published: &mut u64,
 ) -> Result<DepthPublishOutcome> {
-    let canonical_final = canonical_position.final_sequence;
-    let expected = canonical_final.map(|final_sequence| final_sequence.saturating_add(1));
     let mut published = 0_u64;
+    let started = Instant::now();
+    let mut processed = 0;
     while let Some(front) = binding.pending_depth.front() {
+        if processed >= DEPTH_SWITCH_RECORD_BUDGET
+            || (processed > 0 && started.elapsed() >= DEPTH_SWITCH_TIME_BUDGET)
+        {
+            break;
+        }
+        processed += 1;
+        let expected = canonical_position
+            .final_sequence
+            .map(|sequence| sequence.saturating_add(1));
         if let Some(floor) = canonical_position.gap_floor {
             // After a typed GAP, every frame at or below the boundary is
             // covered by the GAP declaration: drop it (never republish), so
@@ -1511,6 +1775,7 @@ fn feed_lane_trades(
                 origin,
                 trades_published,
                 late_corrections,
+                None,
             )?;
             *advance = true;
         }
@@ -1544,10 +1809,24 @@ fn publish_trade_batch(
     Ok(())
 }
 
+/// A duplicate already durable in the recovered journal is not new evidence.
+/// Returns true only the first time this trade, lane and digest are seen.
+fn duplicate_correction_is_new(
+    known: &mut BTreeSet<(u64, String, String)>,
+    trade_id: u64,
+    lane: &str,
+    digest: &str,
+) -> bool {
+    known.insert((trade_id, lane.to_owned(), digest.to_owned()))
+}
+
 /// Observes one materialized trade through the union and journals every
 /// disposition (publication, typed late correction, or a fail-closed
 /// conflict).  Shared by the live feed and the resume historical walk so
-/// both paths emit identical records.
+/// both paths emit identical records.  The historical walk passes the
+/// duplicates already recovered from the journal; the live feed passes
+/// `None` and still records the first corroboration.
+#[allow(clippy::too_many_arguments)]
 fn observe_trade(
     lane: CaptureLane,
     observation: CanonicalObservationV1,
@@ -1556,6 +1835,7 @@ fn observe_trade(
     origin: &Instant,
     trades_published: &mut u64,
     late_corrections: &mut u64,
+    known_duplicates: Option<&mut BTreeSet<(u64, String, String)>>,
 ) -> Result<()> {
     match union.observe(lane, &observation)? {
         TradeUnionDisposition::Publishable(batch) => {
@@ -1565,6 +1845,23 @@ fn observe_trade(
             observation: item,
             kind,
         } => {
+            let journal_correction = match kind {
+                lob_replay::live_arbitration::LateCorrectionKind::Duplicate => {
+                    match known_duplicates {
+                        Some(known) => duplicate_correction_is_new(
+                            known,
+                            item.final_sequence,
+                            lane.as_str(),
+                            &item.observation_sha256,
+                        ),
+                        None => true,
+                    }
+                }
+                lob_replay::live_arbitration::LateCorrectionKind::Unknown => true,
+            };
+            if !journal_correction {
+                return Ok(());
+            }
             journal.append(
                 origin.elapsed().as_nanos() as u64,
                 "LIVE",
@@ -1626,6 +1923,7 @@ fn walk_generation_trades(
     trades_published: &mut u64,
     late_corrections: &mut u64,
     floor: u64,
+    mut known_duplicates: Option<&mut BTreeSet<(u64, String, String)>>,
 ) -> Result<()> {
     while binding.trade_consumed < binding.trade.records().len() {
         let record = binding.trade.records()[binding.trade_consumed].clone();
@@ -1642,6 +1940,7 @@ fn walk_generation_trades(
                 origin,
                 trades_published,
                 late_corrections,
+                known_duplicates.as_deref_mut(),
             )?;
         }
     }
@@ -1663,6 +1962,83 @@ struct GenerationTailWalker {
     generation: PathBuf,
     binding: LaneBinding,
     floor: u64,
+    last_durable_advance: Instant,
+    lag_excluded: bool,
+}
+
+impl GenerationTailWalker {
+    fn new(generation: PathBuf, binding: LaneBinding, floor: u64) -> Self {
+        Self {
+            generation,
+            binding,
+            floor,
+            last_durable_advance: Instant::now(),
+            lag_excluded: false,
+        }
+    }
+
+    fn origin_identity(&self, lane: CaptureLane) -> Result<serde_json::Value> {
+        let record = self
+            .binding
+            .trade
+            .records()
+            .first()
+            .ok_or("tail origin has no trade identity")?;
+        let artifact = self
+            .generation
+            .ancestors()
+            .nth(4)
+            .and_then(Path::file_name)
+            .ok_or("tail origin lacks artifact identity")?;
+        Ok(serde_json::json!({
+            "artifact": artifact.to_string_lossy(),
+            "generation": self.binding.generation_id(),
+            "lane": lane_payload(lane),
+            "connection_epoch": record.frame.connection_epoch,
+            "stream": record.frame.stream,
+        }))
+    }
+}
+
+fn exclude_lagging_tail_origins(
+    lane: CaptureLane,
+    tails: &mut [GenerationTailWalker],
+    union: &TradeUnionState,
+    journal: &mut LiveArbitrationJournalWriter,
+    origin: &Instant,
+    horizon: Duration,
+) -> Result<()> {
+    if union.buffered() == 0 {
+        return Ok(());
+    }
+    for walker in tails {
+        if walker.lag_excluded
+            || walker.binding.trade_consumed != walker.binding.trade.records().len()
+            || (walker.last_durable_advance.elapsed() < horizon
+                && union.buffered() <= TRADE_LAG_CAP)
+        {
+            continue;
+        }
+        let Some(bound) = stream_head_bound(&walker.binding)? else {
+            continue;
+        };
+        let record = walker
+            .binding
+            .trade
+            .records()
+            .last()
+            .expect("bound requires a record");
+        // Persist the exclusion before changing the emission policy. This is
+        // a lag decision, never a claim that the producer or stream ended.
+        journal.append(origin.elapsed().as_nanos() as u64, "LIVE", serde_json::json!({
+            "event":"TRADE_LAG", "reason":"predecessor_lag", "excluded_lane":lane_payload(lane),
+            "origin":walker.origin_identity(lane)?, "buffered":union.buffered(),
+            "previous_emission_bound":bound, "pending_retained":true,
+            "durable_cut":{"records":walker.binding.trade.records().len(),"last_frame_index":record.frame.frame_index,"last_record_sha256":record.record_sha256,"segment_index":walker.binding.trade.segment_index,"segment_durable_offset":walker.binding.trade.last_durable_offset}
+        }))?;
+        walker.lag_excluded = true;
+    }
+    Ok(())
 }
 
 /// Feeds every tail walker's newly durable records FAIL-CLOSED and drops
@@ -1681,7 +2057,9 @@ fn refresh_and_retire_tail_walkers(
     late_corrections: &mut u64,
 ) -> Result<()> {
     for walker in tails.iter_mut() {
-        walker.binding.trade.refresh()?;
+        if walker.binding.trade.refresh()? > 0 {
+            walker.last_durable_advance = Instant::now();
+        }
         walk_generation_trades(
             lane,
             &mut walker.binding,
@@ -1691,6 +2069,7 @@ fn refresh_and_retire_tail_walkers(
             trades_published,
             late_corrections,
             walker.floor,
+            None,
         )?;
     }
     retire_consumed_tail_walkers(tails);
@@ -1708,6 +2087,30 @@ fn retire_consumed_tail_walkers(tails: &mut Vec<GenerationTailWalker>) {
             .unwrap_or(false)
             && walker.binding.trade_consumed == walker.binding.trade.records().len())
     });
+}
+
+/// A stopped lane releases its final trade watermark only after every
+/// known origin reached its exact sealed cut. A non-serving depth candidate
+/// need not become authoritative, but its trades still must be consumed.
+fn lane_trade_drain_complete(
+    binding: &LaneBinding,
+    candidate: Option<&LaneBinding>,
+    tails: &[GenerationTailWalker],
+    latest_generation: Option<&Path>,
+) -> Result<bool> {
+    let head = candidate.unwrap_or(binding);
+    if !tails.is_empty() || latest_generation != Some(head.generation_dir.as_path()) {
+        return Ok(false);
+    }
+    for source in std::iter::once(binding).chain(candidate) {
+        if source.trade_consumed != source.trade.records().len()
+            || !source.trade.consumed_sealed_terminal()?
+            || !binding_streams_sealed(source)?
+        {
+            return Ok(false);
+        }
+    }
+    Ok(true)
 }
 
 /// The serving generation's depth stream must be consumed exactly through
@@ -1797,7 +2200,9 @@ fn sync_tail_walkers(
                 walker.generation.display()
             );
         }
-        walker.binding.trade.refresh()?;
+        if walker.binding.trade.refresh()? > 0 {
+            walker.last_durable_advance = Instant::now();
+        }
         if debug_trace {
             eprintln!(
                 "[trace] sync {lane:?} walker walk {}",
@@ -1813,6 +2218,7 @@ fn sync_tail_walkers(
             trades_published,
             late_corrections,
             walker.floor,
+            None,
         )?;
     }
     // 2. Drop walkers whose generation sealed and drained completely (the
@@ -1875,12 +2281,13 @@ fn sync_tail_walkers(
                 trades_published,
                 late_corrections,
                 scope.floor,
+                None,
             )?;
-            tails.push(GenerationTailWalker {
-                generation: generation.clone(),
-                binding: intermediate,
-                floor: scope.floor,
-            });
+            tails.push(GenerationTailWalker::new(
+                generation.clone(),
+                intermediate,
+                scope.floor,
+            ));
             scope.walked_through = Some(start_ns);
         }
     }
@@ -1901,6 +2308,9 @@ fn lane_emission_clamp(
 ) -> Result<Option<u64>> {
     let mut clamp: Option<u64> = None;
     for walker in tails {
+        if walker.lag_excluded {
+            continue;
+        }
         if let Some(bound) = stream_head_bound(&walker.binding)? {
             clamp = Some(clamp.map_or(bound, |current: u64| current.min(bound)));
         }
@@ -1914,21 +2324,15 @@ fn lane_emission_clamp(
     Ok(clamp)
 }
 
-/// Evaluates the switch with the full fallback: the sibling's pending trail
-/// first, and when the canonical position fell out of the bounded window, a
-/// one-shot re-materialization of the sibling's full window.  Returns the
-/// publishable sibling observations strictly beyond the canonical position
-/// when the switch is proven (geometric coverage + exact convergence).
-/// With `use_fallback = false` (the cooperative stop drain) the expensive
-/// O(prefix) re-materialization is skipped: the bounded trail alone decides,
-/// and an unbridgeable renewal falls through to the typed
-/// gap + bootstrap activation — the drain must never drag an iteration past
-/// the launcher's stop deadline (fault-gate defect hrs-e703a7fc69e4).
+/// Checks the retained exact witness, then advances a resumable replay.
+/// `depth_switch_pending` distinguishes an unfinished proof from a negative
+/// one. A work quota never authorizes a gap, retirement or completion.
 fn evaluate_depth_switch_with_fallback(
     canonical: &CanonicalDepthPosition,
-    sibling: &LaneBinding,
+    sibling: &mut LaneBinding,
     use_fallback: bool,
 ) -> Result<Option<Vec<CanonicalObservationV1>>> {
+    sibling.depth_switch_pending = false;
     let canonical_final = canonical
         .final_sequence
         .ok_or_else(|| "canonical depth position is uninitialized".to_owned())?;
@@ -1936,15 +2340,20 @@ fn evaluate_depth_switch_with_fallback(
         .digest
         .clone()
         .ok_or_else(|| "canonical depth digest is unavailable".to_owned())?;
-    let converged_at = sibling.pending_depth.iter().any(|observation| {
-        observation.final_sequence == canonical_final
-            && observation.observation_sha256 == canonical_digest
-    });
+    let converged_at = sibling
+        .depth_convergence_witness
+        .iter()
+        .chain(sibling.pending_depth.iter())
+        .any(|observation| {
+            observation.final_sequence == canonical_final
+                && observation.observation_sha256 == canonical_digest
+        });
     if converged_at {
         let tail: Vec<CanonicalObservationV1> = sibling
             .pending_depth
             .iter()
             .filter(|observation| observation.final_sequence > canonical_final)
+            .take(DEPTH_SWITCH_RECORD_BUDGET)
             .cloned()
             .collect();
         if tail.is_empty() {
@@ -1955,24 +2364,12 @@ fn evaluate_depth_switch_with_fallback(
     if !use_fallback {
         return Ok(None);
     }
-    // Deep-lag fallback: the bounded trail no longer contains the canonical
-    // position; re-materialize the sibling's full window once.
-    let fallback = materialize_sibling_window(sibling)?;
-    let converged_at = fallback.iter().any(|observation| {
-        observation.final_sequence == canonical_final
-            && observation.observation_sha256 == canonical_digest
-    });
-    if !converged_at {
-        return Ok(None);
-    }
-    let tail: Vec<CanonicalObservationV1> = fallback
-        .into_iter()
-        .filter(|observation| observation.final_sequence > canonical_final)
-        .collect();
-    if tail.is_empty() {
-        return Ok(None);
-    }
-    Ok(Some(tail))
+    replay_sibling_slice(
+        sibling,
+        canonical_final,
+        &canonical_digest,
+        DEPTH_SWITCH_RECORD_BUDGET,
+    )
 }
 
 /// Resume depth transition (ADR-17 B3): after a restart the canonical depth
@@ -2067,6 +2464,11 @@ fn resume_depth_transition(
             return Ok(());
         }
     }
+    if sibling_binding.depth_switch_pending {
+        // Resume the proof in the normal loop; a scheduling quota is not
+        // evidence that the sibling cannot bridge the boundary.
+        return Ok(());
+    }
     // Case 3: typed gap + evidenced rebootstrap from the fresh serving
     // generation (its snapshot/generation evidence is recorded).
     gap_and_bootstrap_depth(
@@ -2082,7 +2484,17 @@ fn resume_depth_transition(
 }
 
 fn run() -> Result<PathBuf> {
-    let mut args = env::args();
+    run_with_args(env::args())
+}
+
+fn run_with_args(mut args: impl Iterator<Item = String>) -> Result<PathBuf> {
+    run_with_tail_lag_horizon(&mut args, TRADE_LAG_HORIZON)
+}
+
+fn run_with_tail_lag_horizon(
+    mut args: impl Iterator<Item = String>,
+    tail_lag_horizon: Duration,
+) -> Result<PathBuf> {
     let executable = args.next().unwrap_or_else(|| "live_arbitration".to_owned());
     let symbol = args.next().ok_or_else(|| {
         format!(
@@ -2157,6 +2569,14 @@ fn run() -> Result<PathBuf> {
     }
     if !prior_artifacts.is_empty() && resume_dir.is_none() {
         return Err("--prior-artifact requires --resume-dir".to_owned());
+    }
+    for prior in &prior_artifacts {
+        if !prior.is_dir() {
+            return Err(format!(
+                "--prior-artifact is not an existing directory: {}",
+                prior.display()
+            ));
+        }
     }
 
     let primary_root = artifact_root.join(lane_leaf(CaptureLane::Primary));
@@ -2305,7 +2725,7 @@ fn run() -> Result<PathBuf> {
             &output_journal,
         )?;
     }
-    if let Some(recovered) = resumed_state {
+    if let Some(mut recovered) = resumed_state {
         trades_published = recovered.trades;
         depth_published = recovered.depth_frames;
         gaps_published = recovered.gaps;
@@ -2343,7 +2763,17 @@ fn run() -> Result<PathBuf> {
                 .expect("continuous requires --identity"),
         )?);
         trade_union.restore_published_floor(recovered.last_trade_id.unwrap_or(0))?;
-        let floor = recovered.last_trade_id.unwrap_or(0);
+        let floor = recovered.startup_trade_floor;
+        trade_union.restore_startup_floor(floor);
+        for (id, digest) in recovered.corrected_identities {
+            trade_union.restore_corrected_identity(id, digest)?;
+        }
+        for scope in primary_prior_scopes
+            .iter_mut()
+            .chain(shadow_prior_scopes.iter_mut())
+        {
+            scope.floor = floor;
+        }
         // Resume completeness (ADR-17 B3): a rebind to a NEW artifact must
         // publish the artifact's FULL trade history above the published
         // floor, not only the newest generation's tail.  Fault-gate defect
@@ -2429,16 +2859,18 @@ fn run() -> Result<PathBuf> {
                 &mut trades_published,
                 &mut late_corrections,
                 floor,
+                Some(&mut recovered.journaled_duplicate_corrections),
             )?;
             // Keep the walker alive: the generation may still be mid-flight
             // (a rebind during the epoch overlap).  Its tail is consumed
             // through the final seal by sync_tail_walkers — never dropped
             // (ADR-17 B3/B5).
-            let walker = GenerationTailWalker {
-                generation: generation.clone(),
-                binding: historical,
-                floor,
-            };
+            let mut walker = GenerationTailWalker::new(generation.clone(), historical, floor);
+            if !walker.binding.trade.records().is_empty() {
+                walker.lag_excluded = recovered
+                    .excluded_tail_origins
+                    .contains(&walker.origin_identity(lane)?.to_string());
+            }
             match lane {
                 CaptureLane::Primary => primary_tails.push(walker),
                 CaptureLane::Shadow => shadow_tails.push(walker),
@@ -2527,10 +2959,6 @@ fn run() -> Result<PathBuf> {
     // stream's convergence on its sealed terminal evidence (a drain that
     // can never converge must not commit a COMPLETE terminal).
     let mut convergence_deadline: Option<Instant> = None;
-    // Fast drain tail (ADR-17 B5): once the cooperative drain deadline
-    // expired with pending seal-waits, the remaining iterations only apply
-    // and publish the already-durable records (see the stop check).
-    let mut fast_drain_tail = false;
     let mut primary_clamp: Option<u64> = None;
     let mut shadow_clamp: Option<u64> = None;
     let debug_trace = std::env::var("BINANCE_LOB_DEBUG_TRACE").is_ok();
@@ -2552,7 +2980,10 @@ fn run() -> Result<PathBuf> {
         };
     }
     let mut iteration: u64 = 0;
-    loop {
+    // One evidenced gap on a sealed serving generation during stop. Repeating
+    // it would emit a second boundary for the same cursor.
+    let mut stop_gap_bootstrapped = false;
+    let handoff_terminal = loop {
         iteration += 1;
         if debug_trace {
             eprintln!(
@@ -2631,11 +3062,13 @@ fn run() -> Result<PathBuf> {
             && !stop_file.as_ref().is_some_and(|file| file.is_file());
         let serving_generation_changed;
         let mut serving_gap_detected = false;
+        let primary_generation;
+        let shadow_generation;
         {
             // Resolve generations and manage predecessor/candidate pairs.
-            let primary_generation =
+            primary_generation =
                 latest_directory_opt(&latest_directory(&primary_root)?.join("generations"))?;
-            let shadow_generation =
+            shadow_generation =
                 latest_directory_opt(&latest_directory(&shadow_root)?.join("generations"))?;
             if debug_trace {
                 eprintln!("[trace] {iteration} generation resolution (bindings loaded)");
@@ -2680,6 +3113,44 @@ fn run() -> Result<PathBuf> {
                     trade_union.clear_emission_clamp(CaptureLane::Shadow);
                 }
             }
+            // Prior-artifact tails progress independently of the current
+            // generation. A stable live binding must not pin a fully sealed
+            // predecessor forever. The pre-refresh clamps above still guard
+            // publication until every newly durable tail record is consumed.
+            refresh_and_retire_tail_walkers(
+                CaptureLane::Primary,
+                &mut primary_tails,
+                &mut trade_union,
+                &mut journal,
+                &origin,
+                &mut trades_published,
+                &mut late_corrections,
+            )?;
+            refresh_and_retire_tail_walkers(
+                CaptureLane::Shadow,
+                &mut shadow_tails,
+                &mut trade_union,
+                &mut journal,
+                &origin,
+                &mut trades_published,
+                &mut late_corrections,
+            )?;
+            exclude_lagging_tail_origins(
+                CaptureLane::Primary,
+                &mut primary_tails,
+                &trade_union,
+                &mut journal,
+                &origin,
+                tail_lag_horizon,
+            )?;
+            exclude_lagging_tail_origins(
+                CaptureLane::Shadow,
+                &mut shadow_tails,
+                &trade_union,
+                &mut journal,
+                &origin,
+                tail_lag_horizon,
+            )?;
             // PRIMARY: keep the predecessor authoritative until its records
             // drain; the candidate binds separately and is activated only by
             // an explicit, evidenced transition.  Every generation between
@@ -3039,11 +3510,7 @@ fn run() -> Result<PathBuf> {
                 };
                 let applied = serving_binding.apply_new_depth()?;
                 let canonical_final = canonical_position.final_sequence.unwrap_or(0);
-                trim_pending_depth(&mut serving_binding.pending_depth, canonical_final);
-                trim_pending_depth_floor(
-                    &mut serving_binding.pending_depth,
-                    canonical_position.gap_floor,
-                );
+                serving_binding.trim_depth_history(canonical_final, canonical_position.gap_floor);
                 let outcome = publish_pending_depth(
                     &mut journal,
                     &origin,
@@ -3071,42 +3538,29 @@ fn run() -> Result<PathBuf> {
             };
             sibling_binding.apply_new_depth()?;
             let canonical_final = canonical_position.final_sequence.unwrap_or(0);
-            trim_pending_depth(&mut sibling_binding.pending_depth, canonical_final);
-            trim_pending_depth_floor(
-                &mut sibling_binding.pending_depth,
-                canonical_position.gap_floor,
-            );
+            sibling_binding.trim_depth_history(canonical_final, canonical_position.gap_floor);
         }
 
         if debug_trace {
             eprintln!("[trace] {iteration} switch resolution");
         }
-        // Switch / gap resolution: on a serving-lane renewal, a bounded stall
-        // or a detected serving gap.  A fresh post-gap bootstrap with no
-        // frames yet has no canonical cursor to switch from: the publisher
-        // resolves it (or the next typed gap records it).  During the
-        // cooperative stop drain only the CHEAP bounded-trail evaluation
-        // runs (the O(prefix) full-window fallback is skipped): the
-        // activation path (typed gap + evidenced bootstrap) still promotes
-        // the pending candidate, so the drained canonical reaches the
-        // sealed evidence's trusted end without ever dragging an iteration
-        // past the launcher's stop deadline (fault-gate defects
-        // hrs-e703a7fc69e4 and hrs-b57c0f9826b9).
+        // Resume switch proof on every poll, including cooperative drain.
+        // Exhausting the replay quota is never evidence authorizing a gap.
         if canonical_position.final_sequence.is_some()
             && (serving_generation_changed
                 || serving_gap_detected
+                || primary_binding.depth_switch_pending
+                || shadow_binding.depth_switch_pending
                 || last_serving_progress.elapsed() >= SWITCH_HORIZON)
         {
             let sibling_binding = if serving_lane == CaptureLane::Primary {
-                &shadow_binding
+                &mut shadow_binding
             } else {
-                &primary_binding
+                &mut primary_binding
             };
-            let sibling_tail = evaluate_depth_switch_with_fallback(
-                &canonical_position,
-                sibling_binding,
-                !stop_requested,
-            )?;
+            let sibling_tail =
+                evaluate_depth_switch_with_fallback(&canonical_position, sibling_binding, true)?;
+            let proof_pending = sibling_binding.depth_switch_pending;
             let mut switched = false;
             if let Some(tail) = sibling_tail {
                 let new_serving_lane = match serving_lane {
@@ -3167,7 +3621,7 @@ fn run() -> Result<PathBuf> {
                     switched = true;
                 }
             }
-            if !switched && (serving_generation_changed || serving_gap_detected) {
+            if !switched && !proof_pending && (serving_generation_changed || serving_gap_detected) {
                 // Dual-loss boundary: the renewed serving lane cannot be
                 // bridged from the sibling — either no sibling tail exists
                 // or the tail itself carries an unprovable jump (a
@@ -3277,7 +3731,7 @@ fn run() -> Result<PathBuf> {
             // successor owns the predecessor tails via --prior-artifact and
             // the un-published buffered trades are still above the floor in
             // the raw union (never duplicated, never lost).
-            if !rebind_stop {
+            let (primary_trade_complete, shadow_trade_complete) = if !rebind_stop {
                 // Feed and retire the tail walkers BEFORE the pending test:
                 // a walker that consumed its sealed terminal cut must stop
                 // holding the drain open (the retain requires the exact
@@ -3300,6 +3754,30 @@ fn run() -> Result<PathBuf> {
                     &mut trades_published,
                     &mut late_corrections,
                 )?;
+                let primary_complete = lane_trade_drain_complete(
+                    &primary_binding,
+                    primary_candidate.as_ref(),
+                    &primary_tails,
+                    primary_generation.as_deref(),
+                )?;
+                let shadow_complete = lane_trade_drain_complete(
+                    &shadow_binding,
+                    shadow_candidate.as_ref(),
+                    &shadow_tails,
+                    shadow_generation.as_deref(),
+                )?;
+                // An exhausted sealed lane cannot hold the other's final
+                // union records behind its last ID. This must precede the
+                // buffered-work pending check, not follow loop termination.
+                for (lane, complete) in [
+                    (CaptureLane::Primary, primary_complete),
+                    (CaptureLane::Shadow, shadow_complete),
+                ] {
+                    if complete {
+                        trade_union.clear_emission_clamp(lane);
+                        trade_union.exclude_lane(lane);
+                    }
+                }
                 // A raised/cleared clamp can release buffered records
                 // without a new observation arriving.
                 match trade_union.flush()? {
@@ -3313,33 +3791,19 @@ fn run() -> Result<PathBuf> {
                         ));
                     }
                 }
-            }
+                (primary_complete, shadow_complete)
+            } else {
+                (true, true)
+            };
             let mut pending = if rebind_stop {
-                false
-            } else if fast_drain_tail {
-                // The seal-waits are abandoned: only durable application
-                // remains (the refresh below discovers any new records).
                 false
             } else {
                 serving_generation_changed
+                    || primary_binding.depth_switch_pending
+                    || shadow_binding.depth_switch_pending
                     || trade_union.buffered() > 0
-                    || !primary_tails.is_empty()
-                    || !shadow_tails.is_empty()
-                    || ((primary_candidate.is_some()
-                        && primary_binding.trade_consumed
-                            == primary_binding.trade.records().len())
-                        || (shadow_candidate.is_some()
-                            && shadow_binding.trade_consumed
-                                == shadow_binding.trade.records().len())
-                        // A rebind abandons the CURRENT bindings: their
-                        // captures live until the epoch ends, and their tail
-                        // records would never be consumed by the successor.
-                        // Wait for the seal, consume everything durable and
-                        // release the watermark (fault-gate defect: 13 union
-                        // trades lost at the rebind boundary, e.g.
-                        // 6669482084).
-                        || !binding_streams_sealed(&primary_binding)?
-                        || !binding_streams_sealed(&shadow_binding)?)
+                    || !primary_trade_complete
+                    || !shadow_trade_complete
             };
             if !pending {
                 let primary_new =
@@ -3371,9 +3835,8 @@ fn run() -> Result<PathBuf> {
             };
             drain_deadline.get_or_insert_with(|| Instant::now() + Duration::from_secs(20));
             trace!(
-                "drain iter {iteration} pending={} fast_tail={} deadline={:?} converged={} pdepth={}/{} sdepth={}/{}",
+                "drain iter {iteration} pending={} deadline={:?} converged={} pdepth={}/{} sdepth={}/{}",
                 pending,
-                fast_drain_tail,
                 drain_deadline.map(|d| d.elapsed().as_millis()),
                 serving_depth_converged,
                 primary_binding.depth_consumed,
@@ -3387,7 +3850,47 @@ fn run() -> Result<PathBuf> {
             }
             if !pending {
                 if serving_depth_converged {
-                    break;
+                    break rebind_stop;
+                }
+                // The sealed generation is fully loaded, but its frames do
+                // not continue the resumed cursor and there is no successor
+                // candidate. The live path only types that gap when it
+                // activates a candidate, so the pending queue never empties
+                // and the stop fails closed on evidence it already holds.
+                // A frame that continues the cursor is the normal tail: the
+                // next iteration publishes it. Typing a gap there rewrites a
+                // contiguous drain.
+                if !stop_gap_bootstrapped {
+                    let binding = if serving_lane == CaptureLane::Primary {
+                        &mut primary_binding
+                    } else {
+                        &mut shadow_binding
+                    };
+                    let expected = canonical_position
+                        .final_sequence
+                        .map(|sequence| sequence.saturating_add(1));
+                    let front_continues = binding.pending_depth.front().is_some_and(|observation| {
+                        expected.is_some_and(|expected| observation.first_sequence == expected)
+                    });
+                    let ready = generation_terminal_complete(&binding.generation_dir)?
+                        && binding_streams_sealed(binding)?
+                        && binding.depth_consumed == binding.depth.records().len()
+                        && binding.depth.consumed_sealed_terminal()?
+                        && !binding.pending_depth.is_empty()
+                        && !front_continues;
+                    if ready {
+                        stop_gap_bootstrapped = true;
+                        gap_and_bootstrap_depth(
+                            &mut journal,
+                            &origin,
+                            serving_lane,
+                            binding,
+                            &mut canonical_position,
+                            &mut depth_published,
+                            &mut gaps_published,
+                        )?;
+                        continue;
+                    }
                 }
                 // The refresh delivered nothing yet the sealed terminal cut
                 // is unconsumed: keep polling (the follower converges on the
@@ -3405,22 +3908,15 @@ fn run() -> Result<PathBuf> {
                 std::thread::sleep(POLL);
                 continue;
             }
-            // The drain deadline expired with pending work (unsealable
-            // predecessor tails of killed lanes, a stalled successor bind).
-            // Enter the FAST drain tail: the seal/candidate/buffer waits
-            // are abandoned (the terminal declares the window honestly),
-            // and the remaining iterations only APPLY AND PUBLISH whatever
-            // is already durable — the final depth frames and trades that
-            // the last refresh just loaded must reach the journal before
-            // the terminal commits (fault-gate defect hrs-0d6812cae7c6:
-            // the canonical depth ended ONE update short of the trusted
-            // end because the deadline expired exactly when the final
-            // refresh landed).
-            fast_drain_tail = true;
-            continue;
+            // A timeout is not evidence that unpublished work disappeared.
+            // Preserve the durable resumable prefix without a terminal.
+            return Err(
+                "cooperative stop drain timed out with pending work; journal remains incomplete"
+                    .to_owned(),
+            );
         }
         std::thread::sleep(POLL);
-    }
+    };
 
     // Clean-stop drain (ADR-17 B3): when the service was stopped with its
     // lanes sealed (the supervisor epochs ended first), every buffered
@@ -3452,6 +3948,7 @@ fn run() -> Result<PathBuf> {
         serde_json::json!({
             "event": "ARBITRATION_TERMINAL",
             "status": "COMPLETE",
+            "completion_scope": if handoff_terminal { "HANDOFF" } else { "SEALED_DRAIN" },
             "trades": trades_published,
             "depth_frames": depth_published,
             "gaps": gaps_published,
@@ -3478,6 +3975,1233 @@ mod tests {
     use lob_replay::live_arbitration::{
         LiveArbitrationJournalEnvelopeV1, LiveArbitrationJournalWriter,
     };
+
+    fn regression_20260922_fixture_dir(name: &str) -> PathBuf {
+        let root = env::var_os("CARGO_TARGET_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(env::temp_dir)
+            .join("canonical-fault-fixtures");
+        fs::create_dir_all(&root).unwrap();
+        let path = tempfile::Builder::new()
+            .prefix(name)
+            .tempdir_in(root)
+            .unwrap()
+            .keep();
+        eprintln!("retained fault fixture: {}", path.display());
+        path
+    }
+
+    fn regression_20260922_generation(
+        artifact: &Path,
+        lane: &str,
+        stamp: u64,
+        ids: &[u64],
+        complete: bool,
+    ) -> (
+        PathBuf,
+        lob_replay::segment_chain::RawSegmentManifestWriter,
+        lob_replay::segment_chain::RawSegmentManifestWriter,
+    ) {
+        use lob_replay::segment_chain::RawSegmentManifestWriter;
+        let campaign = artifact.join(lane).join("campaign");
+        let epoch = format!("{stamp}-{lane}");
+        let generation = lob_reply_helpers::make_generation(
+            &campaign,
+            &format!("{stamp}-BTCUSDT-g000-fixture"),
+            "BTCUSDT",
+            &epoch,
+        );
+        // The fixture helper wrote only the empty manifest header; replace
+        // that owned fixture header with the sealed depth fixture below.
+        let mut depth_manifest = RawSegmentManifestWriter::from_sink(
+            fs::File::create(generation.join("depth/segments.bnseg")).unwrap(),
+        )
+        .unwrap();
+        let depth_frames = [
+            lob_reply_helpers::fixture_frame(
+                "BTCUSDT", "btcusdt@depth", &epoch, 0, 10,
+                br#"{"e":"depthUpdate","E":1,"s":"BTCUSDT","U":101,"u":101,"b":[],"a":[]}"#,
+            ),
+            lob_reply_helpers::fixture_frame(
+                "BTCUSDT", "btcusdt@depth", &epoch, 1, 11,
+                br#"{"e":"depthUpdate","E":2,"s":"BTCUSDT","U":102,"u":105,"b":[["100","4"]],"a":[]}"#,
+            ),
+        ];
+        lob_reply_helpers::append_segment_fixture(
+            &generation.join("depth"),
+            &mut depth_manifest,
+            &root_segment_genesis(&epoch, "btcusdt@depth").unwrap(),
+            &depth_frames,
+        );
+        let mut trade_manifest =
+            RawSegmentManifestWriter::create(&generation.join("trade/segments.bnseg")).unwrap();
+        let frames: Vec<_> = ids
+            .iter()
+            .enumerate()
+            .map(|(index, id)| {
+                lob_reply_helpers::trade_frame(
+                    "BTCUSDT",
+                    &epoch,
+                    index as u64,
+                    20 + index as u64,
+                    *id,
+                )
+            })
+            .collect();
+        lob_reply_helpers::append_segment_fixture(
+            &generation.join("trade"),
+            &mut trade_manifest,
+            &root_segment_genesis(&epoch, "btcusdt@trade").unwrap(),
+            &frames,
+        );
+        if complete {
+            lob_reply_helpers::mark_generation_complete(&generation);
+        }
+        (generation, trade_manifest, depth_manifest)
+    }
+
+    fn regression_20260922_seed_resume(root: &Path) -> (PathBuf, PathBuf, PathBuf) {
+        let journals = root.join("journals");
+        let identity = root.join("identity.bin");
+        let first = journals.join("BTCUSDT-seg-0000.jsonl");
+        let next = journals.join("BTCUSDT-seg-0001.jsonl");
+        let mut journal = LiveArbitrationJournalWriter::create(&first).unwrap();
+        journal
+            .append(
+                0,
+                "LIVE",
+                serde_json::json!({
+                    "event":"ARBITRATION_STARTED","symbol":"BTCUSDT","trade_floor":0
+                }),
+            )
+            .unwrap();
+        journal
+            .append(
+                1,
+                "LIVE",
+                serde_json::json!({
+                    "event":"ARBITRATION_TERMINAL","status":"COMPLETE",
+                    "trades":0,"depth_frames":0,"gaps":0,"late_corrections":0
+                }),
+            )
+            .unwrap();
+        (journals, identity, next)
+    }
+
+    fn regression_20260922_start(
+        root: &Path,
+        artifact: &Path,
+        prior: &Path,
+    ) -> (PathBuf, std::thread::JoinHandle<Result<PathBuf>>) {
+        let (journals, identity, next) = regression_20260922_seed_resume(root);
+        let args = vec![
+            "live_arbitration".to_owned(),
+            "BTCUSDT".to_owned(),
+            artifact.to_string_lossy().into_owned(),
+            next.to_string_lossy().into_owned(),
+            "3".to_owned(),
+            "--identity".to_owned(),
+            identity.to_string_lossy().into_owned(),
+            "--resume-dir".to_owned(),
+            journals.to_string_lossy().into_owned(),
+            "--prior-artifact".to_owned(),
+            prior.to_string_lossy().into_owned(),
+        ];
+        let child = std::thread::spawn(move || run_with_args(args.into_iter()));
+        (next, child)
+    }
+
+    fn regression_20260922_ids_if_complete(path: &Path) -> Vec<u64> {
+        fs::read_to_string(path)
+            .unwrap_or_default()
+            .lines()
+            .filter_map(|line| {
+                serde_json::from_str::<serde_json::Value>(line)
+                    .ok()
+                    .and_then(|record| {
+                        let payload = &record["body"]["payload"];
+                        (payload["event"] == "TRADE_OBSERVATION")
+                            .then(|| payload["trade_id"].as_u64())
+                            .flatten()
+                    })
+            })
+            .collect()
+    }
+
+    #[test]
+    fn regression_20260922_failed_generation_without_snapshot_still_binds_trades() {
+        let artifact = regression_20260922_fixture_dir("failed-no-snapshot-");
+        let (generation, _, _) =
+            regression_20260922_generation(&artifact, "p", 10, &[6704116076, 6704116077], false);
+        fs::remove_file(generation.join("snapshot.bnraw")).unwrap();
+        let failed = serde_json::json!({
+            "schema": "RawGenerationManifestV1",
+            "status": "FAILED",
+            "snapshot": null,
+            "failure": "transport watchdog pong deadline exceeded"
+        });
+        fs::write(
+            generation.join("generation.json"),
+            serde_json::to_vec(&failed).unwrap(),
+        )
+        .unwrap();
+        let bound = LaneBinding::bind_generation(generation.parent().unwrap(), &generation)
+            .expect("terminal FAILED generation must keep its durable trades bindable");
+        assert_eq!(bound.trade.records().len(), 2);
+
+        let (empty_depth, _, _) =
+            regression_20260922_generation(&artifact, "s", 11, &[6704116616], false);
+        fs::remove_file(empty_depth.join("snapshot.bnraw")).unwrap();
+        fs::write(
+            empty_depth.join("generation.json"),
+            serde_json::to_vec(&failed).unwrap(),
+        )
+        .unwrap();
+        fs::write(empty_depth.join("depth/segment-000000.bnraw"), [0_u8; 8]).unwrap();
+        let bound = LaneBinding::bind_generation(empty_depth.parent().unwrap(), &empty_depth)
+            .expect("empty depth on a FAILED generation must not discard its trades");
+        assert_eq!(bound.trade.records().len(), 1);
+        assert!(bound.depth.records().is_empty());
+
+        let (open_generation, _, _) =
+            regression_20260922_generation(&artifact, "p", 12, &[3], false);
+        fs::remove_file(open_generation.join("snapshot.bnraw")).unwrap();
+        let error =
+            match LaneBinding::bind_generation(open_generation.parent().unwrap(), &open_generation)
+            {
+                Ok(_) => {
+                    panic!("a generation without a terminal FAILED declaration stays fail-closed")
+                }
+                Err(error) => error,
+            };
+        assert!(error.contains("lacks a snapshot"), "{error}");
+
+        let (complete_generation, _, _) =
+            regression_20260922_generation(&artifact, "s", 13, &[4], true);
+        fs::remove_file(complete_generation.join("snapshot.bnraw")).unwrap();
+        let error = match LaneBinding::bind_generation(
+            complete_generation.parent().unwrap(),
+            &complete_generation,
+        ) {
+            Ok(_) => panic!("COMPLETE without a snapshot stays fail-closed"),
+            Err(error) => error,
+        };
+        assert!(error.contains("lacks a snapshot"), "{error}");
+    }
+
+    #[test]
+    fn regression_20260922_sealed_prior_progresses_without_generation_change() {
+        let root = regression_20260922_fixture_dir("sealed-prior-");
+        let prior = root.join("prior");
+        let live = root.join("live");
+        for lane in ["p", "s"] {
+            regression_20260922_generation(&prior, lane, 1000, &[101, 111], true);
+            regression_20260922_generation(&live, lane, 2000, &[300, 450], true);
+        }
+        let (journal, child) = regression_20260922_start(&root, &live, &prior);
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let mut ids = Vec::new();
+        while Instant::now() < deadline {
+            ids = regression_20260922_ids_if_complete(&journal);
+            if ids.contains(&450) {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        // Join and preserve final output before asserting. The stop drain
+        // must not conceal that no progress occurred during normal capture.
+        let result = child.join().unwrap();
+        assert!(result.is_ok(), "main failed: {result:?}");
+        assert_eq!(
+            ids,
+            vec![101, 111, 300, 450],
+            "sealed prior clamp prevented live progress before stop"
+        );
+    }
+
+    #[test]
+    fn regression_20260922_late_prior_seal_progresses_without_generation_change() {
+        use lob_replay::segment_chain::successor_segment_genesis;
+        let root = regression_20260922_fixture_dir("late-prior-seal-");
+        let prior = root.join("prior");
+        let live = root.join("live");
+        let mut held = Vec::new();
+        for lane in ["p", "s"] {
+            let (generation, manifest, _) =
+                regression_20260922_generation(&prior, lane, 1000, &[101, 111], false);
+            let trade = generation.join("trade");
+            let scan = scan_segment_manifest(&trade.join("segments.bnseg")).unwrap();
+            let next = successor_segment_genesis(&scan.entries[0].seal).unwrap();
+            let frames = [lob_reply_helpers::trade_frame(
+                "BTCUSDT",
+                &format!("1000-{lane}"),
+                2,
+                30,
+                150,
+            )];
+            let (raw_file, ack, progress) =
+                lob_reply_helpers::write_in_flight_segment(&trade, &next, &frames);
+            held.push((generation, manifest, next, raw_file, ack, progress));
+            regression_20260922_generation(&live, lane, 2000, &[300, 450], true);
+        }
+        let (journal, child) = regression_20260922_start(&root, &live, &prior);
+        let ready_deadline = Instant::now() + Duration::from_secs(1);
+        while regression_20260922_ids_if_complete(&journal).is_empty()
+            && Instant::now() < ready_deadline
+        {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        for (generation, mut manifest, next, raw_file, ack, mut progress) in held {
+            progress.append(ack.clone()).unwrap();
+            lob_reply_helpers::seal_in_flight(
+                &generation.join("trade"),
+                &mut manifest,
+                &next,
+                &raw_file,
+                &ack,
+            );
+            lob_reply_helpers::mark_generation_complete(&generation);
+        }
+        let deadline = Instant::now() + Duration::from_secs(1);
+        let mut ids = Vec::new();
+        while Instant::now() < deadline {
+            ids = regression_20260922_ids_if_complete(&journal);
+            if ids.contains(&450) {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let result = child.join().unwrap();
+        assert!(result.is_ok(), "main failed: {result:?}");
+        assert_eq!(
+            ids,
+            vec![101, 111, 150, 300, 450],
+            "late ACK+seal must be consumed without a new live generation"
+        );
+    }
+
+    #[test]
+    fn regression_20260922_depth_pruning_preserves_exact_switch_witness() {
+        let root = regression_20260922_fixture_dir("depth-witness-");
+        let (generation, _, _) =
+            regression_20260922_generation(&root.join("live"), "s", 2000, &[300, 450], true);
+        let campaign = generation.parent().unwrap().parent().unwrap();
+        let mut sibling = LaneBinding::bind_generation(campaign, &generation).unwrap();
+        let observations = materialize_binding_observations(&sibling).unwrap();
+        let boundary = observations[0].clone();
+        sibling.pending_depth = VecDeque::from(observations);
+        let canonical = CanonicalDepthPosition {
+            final_sequence: Some(101),
+            digest: Some(boundary.observation_sha256),
+            gap_floor: None,
+        };
+        sibling.trim_depth_history(101, None);
+        let tail = evaluate_depth_switch_with_fallback(&canonical, &mut sibling, false).unwrap();
+        assert_eq!(
+            tail.map(|tail| tail
+                .iter()
+                .map(|obs| obs.final_sequence)
+                .collect::<Vec<_>>()),
+            Some(vec![105]),
+            "pruning consumed observations must retain the exact convergence witness"
+        );
+    }
+
+    #[test]
+    fn regression_20260922_each_published_depth_uses_the_new_frontier() {
+        let root = regression_20260922_fixture_dir("depth-frontier-");
+        let (generation, _, _) =
+            regression_20260922_generation(&root.join("live"), "p", 2000, &[300, 450], true);
+        let mut binding = LaneBinding::bind_generation(
+            generation.parent().unwrap().parent().unwrap(),
+            &generation,
+        )
+        .unwrap();
+        binding.pending_depth = materialize_binding_observations(&binding).unwrap().into();
+        let mut canonical = CanonicalDepthPosition {
+            final_sequence: Some(100),
+            digest: Some("snapshot".to_owned()),
+            gap_floor: None,
+        };
+        let mut journal =
+            LiveArbitrationJournalWriter::create(&root.join("frontier.jsonl")).unwrap();
+        let mut published = 0;
+        let result = publish_pending_depth(
+            &mut journal,
+            &Instant::now(),
+            CaptureLane::Primary,
+            &mut binding,
+            &mut canonical,
+            &mut published,
+        )
+        .unwrap();
+        assert!(
+            matches!(result, DepthPublishOutcome::Published(2)),
+            "second contiguous frame must not be classified as a gap"
+        );
+        assert_eq!(canonical.final_sequence, Some(105));
+        assert_eq!(published, 2);
+    }
+
+    #[test]
+    fn regression_20260922_stale_wrong_and_gap_witness_never_switch() {
+        let root = regression_20260922_fixture_dir("negative-witness-");
+        let (generation, _, _) =
+            regression_20260922_generation(&root.join("live"), "s", 2000, &[300, 450], true);
+        let mut binding = LaneBinding::bind_generation(
+            generation.parent().unwrap().parent().unwrap(),
+            &generation,
+        )
+        .unwrap();
+        let observations = materialize_binding_observations(&binding).unwrap();
+        let digest = observations[0].observation_sha256.clone();
+        binding.pending_depth = observations.into();
+        binding.trim_depth_history(101, None);
+        let wrong = CanonicalDepthPosition {
+            final_sequence: Some(101),
+            digest: Some("wrong".to_owned()),
+            gap_floor: None,
+        };
+        assert!(
+            evaluate_depth_switch_with_fallback(&wrong, &mut binding, false)
+                .unwrap()
+                .is_none()
+        );
+        let advanced = CanonicalDepthPosition {
+            final_sequence: Some(102),
+            digest: Some(digest.clone()),
+            gap_floor: None,
+        };
+        binding.trim_depth_history(102, None);
+        assert!(binding.depth_convergence_witness.is_none());
+        assert!(
+            evaluate_depth_switch_with_fallback(&advanced, &mut binding, false)
+                .unwrap()
+                .is_none()
+        );
+        binding.depth_convergence_witness =
+            Some(materialize_binding_observations(&binding).unwrap()[0].clone());
+        binding.trim_depth_history(101, Some(101));
+        assert!(binding.depth_convergence_witness.is_none());
+        let rebound = LaneBinding::bind_generation(
+            generation.parent().unwrap().parent().unwrap(),
+            &generation,
+        )
+        .unwrap();
+        assert!(rebound.depth_convergence_witness.is_none());
+    }
+
+    fn regression_20260922_long_generation(artifact: &Path, lane: &str) -> PathBuf {
+        use lob_replay::segment_chain::successor_segment_genesis;
+        let (generation, _, mut manifest) =
+            regression_20260922_generation(artifact, lane, 2000, &[300, 450], false);
+        let path = generation.join("depth/segments.bnseg");
+        let scan = scan_segment_manifest(&path).unwrap();
+        let genesis = successor_segment_genesis(&scan.entries[0].seal).unwrap();
+        let frames: Vec<_> = (0..600).map(|index| {
+            let sequence = 106 + index;
+            let payload = serde_json::json!({"e":"depthUpdate","E":sequence,"s":"BTCUSDT","U":sequence,"u":sequence,"b":[],"a":[]});
+            lob_reply_helpers::fixture_frame("BTCUSDT", "btcusdt@depth", &format!("2000-{lane}"), index+2, index+30, &serde_json::to_vec(&payload).unwrap())
+        }).collect();
+        lob_reply_helpers::append_segment_fixture(
+            &generation.join("depth"),
+            &mut manifest,
+            &genesis,
+            &frames,
+        );
+        lob_reply_helpers::mark_generation_complete(&generation);
+        generation
+    }
+
+    #[test]
+    fn regression_20260922_fallback_slices_preserve_exact_historical_tail() {
+        let root = regression_20260922_fixture_dir("fallback-slices-");
+        let generation = regression_20260922_long_generation(&root.join("live"), "s");
+        let mut binding = LaneBinding::bind_generation(
+            generation.parent().unwrap().parent().unwrap(),
+            &generation,
+        )
+        .unwrap();
+        let oracle = materialize_binding_observations(&binding).unwrap();
+        let boundary = &oracle[200];
+        let mut previous = 0;
+        let mut polls = 0;
+        loop {
+            let result = replay_sibling_slice(
+                &mut binding,
+                boundary.final_sequence,
+                &boundary.observation_sha256,
+                7,
+            )
+            .unwrap();
+            polls += 1;
+            if result.is_some() {
+                break;
+            }
+            assert!(
+                binding.depth_switch_pending,
+                "budget exhaustion is pending, not negative proof"
+            );
+            let consumed = binding.depth_switch_replay.as_ref().unwrap().consumed;
+            assert!(consumed > previous && consumed - previous <= 7);
+            previous = consumed;
+            assert!(polls < 100);
+        }
+        assert!(polls > 1);
+        let mut actual: Vec<_> = binding.pending_depth.drain(..).collect();
+        while binding.depth_consumed < binding.depth.records().len() {
+            let before = binding.depth_consumed;
+            binding.apply_new_depth().unwrap();
+            assert!(binding.depth_consumed - before <= DEPTH_SWITCH_RECORD_BUDGET);
+            actual.extend(binding.pending_depth.drain(..));
+        }
+        let expected: Vec<_> = oracle
+            .iter()
+            .skip(201)
+            .map(|obs| {
+                (
+                    &obs.record_sha256,
+                    &obs.observation_sha256,
+                    obs.final_sequence,
+                )
+            })
+            .collect();
+        let actual: Vec<_> = actual
+            .iter()
+            .map(|obs| {
+                (
+                    &obs.record_sha256,
+                    &obs.observation_sha256,
+                    obs.final_sequence,
+                )
+            })
+            .collect();
+        assert_eq!(
+            actual, expected,
+            "cursor transfer must retain every historical observation and exact digest"
+        );
+    }
+
+    #[test]
+    fn regression_20260922_stop_during_resume_fallback_drains_exact_tail() {
+        let root = regression_20260922_fixture_dir("stop-during-fallback-");
+        let artifact = root.join("live");
+        let primary = regression_20260922_long_generation(&artifact, "p");
+        regression_20260922_long_generation(&artifact, "s");
+        let binding =
+            LaneBinding::bind_generation(primary.parent().unwrap().parent().unwrap(), &primary)
+                .unwrap();
+        let oracle = materialize_binding_observations(&binding).unwrap();
+        let boundary = &oracle[400];
+        let journals = root.join("journals");
+        let mut seed =
+            LiveArbitrationJournalWriter::create(&journals.join("BTCUSDT-seg-0000.jsonl")).unwrap();
+        seed.append(
+            0,
+            "LIVE",
+            serde_json::json!({"event":"ARBITRATION_STARTED","symbol":"BTCUSDT","trade_floor":0}),
+        )
+        .unwrap();
+        seed.append(1, "LIVE", serde_json::json!({"event":"DEPTH_OBSERVATION","lane":"PRIMARY","first_sequence":boundary.first_sequence,"final_sequence":boundary.final_sequence,"record_sha256":boundary.record_sha256,"observation_sha256":boundary.observation_sha256})).unwrap();
+        seed.append(2, "LIVE", serde_json::json!({"event":"ARBITRATION_TERMINAL","status":"COMPLETE","trades":0,"depth_frames":1,"gaps":0,"late_corrections":0})).unwrap();
+        drop(seed);
+        let output = journals.join("BTCUSDT-seg-0001.jsonl");
+        let stop = root.join("stop.flag");
+        fs::write(&stop, "stop fixture").unwrap();
+        let args = vec![
+            "live_arbitration".to_owned(),
+            "BTCUSDT".to_owned(),
+            artifact.to_string_lossy().into_owned(),
+            output.to_string_lossy().into_owned(),
+            "--continuous".to_owned(),
+            "--identity".to_owned(),
+            root.join("identity.bin").to_string_lossy().into_owned(),
+            "--resume-dir".to_owned(),
+            journals.to_string_lossy().into_owned(),
+            "--stop-file".to_owned(),
+            stop.to_string_lossy().into_owned(),
+        ];
+        let started = Instant::now();
+        run_with_args(args.into_iter()).unwrap();
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "small sealed fixture must drain cooperatively across quotas"
+        );
+        let values: Vec<serde_json::Value> = fs::read_to_string(output)
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        let actual: Vec<_> = values
+            .iter()
+            .filter_map(|record| {
+                let payload = &record["body"]["payload"];
+                (payload["event"] == "DEPTH_OBSERVATION").then(|| {
+                    (
+                        payload["final_sequence"].as_u64().unwrap(),
+                        payload["observation_sha256"].as_str().unwrap(),
+                    )
+                })
+            })
+            .collect();
+        let expected: Vec<_> = oracle
+            .iter()
+            .skip(401)
+            .map(|obs| (obs.final_sequence, obs.observation_sha256.as_str()))
+            .collect();
+        assert_eq!(actual, expected);
+        assert_eq!(
+            values.last().unwrap()["body"]["payload"]["completion_scope"],
+            "SEALED_DRAIN"
+        );
+        assert!(
+            !values
+                .iter()
+                .any(|record| record["body"]["payload"]["event"] == "GAP")
+        );
+    }
+
+    #[test]
+    fn regression_20260922_incremental_cursor_rejects_identity_changes() {
+        let root = regression_20260922_fixture_dir("cursor-identity-");
+        let (generation, _, _) =
+            regression_20260922_generation(&root.join("live"), "p", 2000, &[300, 450], true);
+        let binding = LaneBinding::bind_generation(
+            generation.parent().unwrap().parent().unwrap(),
+            &generation,
+        )
+        .unwrap();
+        let snapshots = read_raw_records(&binding.snapshot_path).unwrap();
+        let first = &binding.depth.records()[0];
+        let mut wrong = first.clone();
+        wrong.frame.symbol = "ETHUSDT".to_owned();
+        assert!(DepthObservationCursor::from_snapshot(&snapshots[0], &wrong).is_err());
+        let mut cursor = DepthObservationCursor::from_snapshot(&snapshots[0], first).unwrap();
+        wrong = first.clone();
+        wrong.frame.connection_epoch = "another-epoch".to_owned();
+        assert!(cursor.apply_record(&wrong).is_err());
+        let observation = cursor.apply_record(first).unwrap().unwrap();
+        assert_eq!(
+            observation.observation_sha256,
+            materialize_binding_observations(&binding).unwrap()[0].observation_sha256
+        );
+    }
+
+    #[test]
+    fn regression_20260922_unsealed_pending_timeout_never_completes() {
+        let root = regression_20260922_fixture_dir("pending-timeout-");
+        let prior = root.join("prior");
+        let live = root.join("live");
+        for lane in ["p", "s"] {
+            regression_20260922_generation(&prior, lane, 1000, &[101, 111], false);
+            regression_20260922_generation(&live, lane, 2000, &[300, 450], true);
+        }
+        let (journal, child) = regression_20260922_start(&root, &live, &prior);
+        let result = child.join().unwrap();
+        assert!(
+            result.is_err(),
+            "pending predecessor timed out but claimed completion: {result:?}"
+        );
+        let contents = fs::read_to_string(journal).unwrap();
+        assert!(
+            !contents.contains("ARBITRATION_TERMINAL"),
+            "timeout must preserve an incomplete resumable prefix"
+        );
+    }
+
+    #[test]
+    fn regression_p0_unsealed_prior_lag_preserves_late_and_live_progress() {
+        use lob_replay::segment_chain::successor_segment_genesis;
+        let root = regression_20260922_fixture_dir("p0-unsealed-lag-");
+        let prior = root.join("prior");
+        let live = root.join("live");
+        let mut held = Vec::new();
+        let mut current = Vec::new();
+        for lane in ["p", "s"] {
+            let (generation, _, _) =
+                regression_20260922_generation(&prior, lane, 1000, &[101, 111], false);
+            let trade = generation.join("trade");
+            let scan = scan_segment_manifest(&trade.join("segments.bnseg")).unwrap();
+            let genesis = successor_segment_genesis(&scan.entries[0].seal).unwrap();
+            let frames = [lob_reply_helpers::trade_frame(
+                "BTCUSDT",
+                &format!("1000-{lane}"),
+                2,
+                40,
+                150,
+            )];
+            let (_, ack, progress) =
+                lob_reply_helpers::write_in_flight_segment(&trade, &genesis, &frames);
+            held.push((ack, progress));
+            let (generation, manifest, _) =
+                regression_20260922_generation(&live, lane, 2000, &[300, 450], false);
+            current.push((generation, manifest, lane));
+        }
+        let (journals, identity, journal) = regression_20260922_seed_resume(&root);
+        let stop = root.join("stop.flag");
+        let rebind = root.join("rebind.flag");
+        let args = vec![
+            "live_arbitration".to_owned(),
+            "BTCUSDT".to_owned(),
+            live.to_string_lossy().into_owned(),
+            journal.to_string_lossy().into_owned(),
+            "--continuous".to_owned(),
+            "--identity".to_owned(),
+            identity.to_string_lossy().into_owned(),
+            "--resume-dir".to_owned(),
+            journals.to_string_lossy().into_owned(),
+            "--prior-artifact".to_owned(),
+            prior.to_string_lossy().into_owned(),
+            "--stop-file".to_owned(),
+            stop.to_string_lossy().into_owned(),
+            "--rebind-file".to_owned(),
+            rebind.to_string_lossy().into_owned(),
+        ];
+        let child = std::thread::spawn(move || {
+            run_with_tail_lag_horizon(args.into_iter(), Duration::from_millis(100))
+        });
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let mut step = 0;
+        let mut progressed = false;
+        while Instant::now() < deadline {
+            for (generation, manifest, lane) in &mut current {
+                let trade = generation.join("trade");
+                let scan = scan_segment_manifest(&trade.join("segments.bnseg")).unwrap();
+                let genesis =
+                    successor_segment_genesis(&scan.entries.last().unwrap().seal).unwrap();
+                let frames = [lob_reply_helpers::trade_frame(
+                    "BTCUSDT",
+                    &format!("2000-{lane}"),
+                    step + 2,
+                    step + 50,
+                    600 + step * 100,
+                )];
+                lob_reply_helpers::append_segment_fixture(&trade, manifest, &genesis, &frames);
+            }
+            step += 1;
+            if regression_20260922_ids_if_complete(&journal).contains(&450) {
+                progressed = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        for (ack, mut progress) in held {
+            progress.append(ack).unwrap();
+        }
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while Instant::now() < deadline {
+            if fs::read_to_string(&journal)
+                .unwrap_or_default()
+                .contains("TRADE_LATE_CORRECTION")
+            {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        fs::write(rebind, "transfer pending fixture").unwrap();
+        let result = child.join().unwrap();
+        assert!(result.is_ok(), "main failed: {result:?}");
+        assert!(
+            progressed,
+            "current lanes kept advancing but interrupted prior clamped live publication forever"
+        );
+        let rows: Vec<serde_json::Value> = fs::read_to_string(journal)
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        assert!(
+            rows.iter()
+                .any(|row| row["body"]["payload"]["event"] == "TRADE_LAG"
+                    && row["body"]["payload"]["reason"] == "predecessor_lag")
+        );
+        let corrections: Vec<_> = rows
+            .iter()
+            .filter(|row| {
+                row["body"]["payload"]["event"] == "TRADE_LATE_CORRECTION"
+                    && row["body"]["payload"]["trade_id"] == 150
+            })
+            .collect();
+        assert_eq!(
+            corrections.len(),
+            2,
+            "both genuine late raw lineages must survive origin exclusion"
+        );
+        assert_eq!(corrections[0]["body"]["payload"]["kind"], "unknown");
+        assert_eq!(corrections[1]["body"]["payload"]["kind"], "duplicate");
+        assert_eq!(
+            rows.last().unwrap()["body"]["payload"]["completion_scope"],
+            "HANDOFF"
+        );
+        let recovered = recover_arbitration_state_opt(
+            &root.join("journals"),
+            &root.join("identity.bin"),
+            &root.join("journals/BTCUSDT-seg-0002.jsonl"),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            recovered.excluded_tail_origins.len(),
+            2,
+            "origin lag exclusions must survive a restart"
+        );
+        assert_eq!(recovered.corrected_identities.len(), 1);
+        assert!(recovered.corrected_identities.contains_key(&150));
+        // A lag exclusion restores publication, never fabricates source
+        // closure. Even with both current generations now COMPLETE, the
+        // unsealed prior prevents a SEALED_DRAIN terminal on normal stop.
+        for (generation, _, _) in &current {
+            lob_reply_helpers::mark_generation_complete(generation);
+        }
+        fs::write(root.join("stop.flag"), "normal stop fixture").unwrap();
+        let next = root.join("journals/BTCUSDT-seg-0002.jsonl");
+        let args = vec![
+            "live_arbitration".to_owned(),
+            "BTCUSDT".to_owned(),
+            live.to_string_lossy().into_owned(),
+            next.to_string_lossy().into_owned(),
+            "--continuous".to_owned(),
+            "--identity".to_owned(),
+            root.join("identity.bin").to_string_lossy().into_owned(),
+            "--resume-dir".to_owned(),
+            root.join("journals").to_string_lossy().into_owned(),
+            "--prior-artifact".to_owned(),
+            prior.to_string_lossy().into_owned(),
+            "--stop-file".to_owned(),
+            root.join("stop.flag").to_string_lossy().into_owned(),
+        ];
+        let result = run_with_tail_lag_horizon(args.into_iter(), Duration::from_millis(100));
+        assert!(
+            result
+                .as_ref()
+                .is_err_and(|error| error.contains("pending work")),
+            "unclosed predecessor must fail normal close: {result:?}"
+        );
+        assert!(
+            !fs::read_to_string(next)
+                .unwrap()
+                .contains("ARBITRATION_TERMINAL")
+        );
+    }
+
+    #[test]
+    fn regression_p0_new_prior_below_resume_floor_emits_unknown() {
+        let root = regression_20260922_fixture_dir("p0-resume-floor-");
+        let prior = root.join("prior");
+        let live = root.join("live");
+        let mut primary = None;
+        for lane in ["p", "s"] {
+            regression_20260922_generation(&prior, lane, 1000, &[90, 150], true);
+            let (generation, _, _) =
+                regression_20260922_generation(&live, lane, 2000, &[300, 450, 600], true);
+            if lane == "p" {
+                primary = Some(generation);
+            }
+        }
+        let generation = primary.unwrap();
+        let binding = LaneBinding::bind_generation(
+            generation.parent().unwrap().parent().unwrap(),
+            &generation,
+        )
+        .unwrap();
+        let journals = root.join("journals");
+        let mut seed =
+            LiveArbitrationJournalWriter::create(&journals.join("BTCUSDT-seg-0000.jsonl")).unwrap();
+        seed.append(
+            0,
+            "LIVE",
+            serde_json::json!({"event":"ARBITRATION_STARTED","symbol":"BTCUSDT","trade_floor":100}),
+        )
+        .unwrap();
+        for (index, raw) in binding.trade.records()[..2].iter().enumerate() {
+            let obs = materialize_trade_record(raw).unwrap();
+            seed.append(index as u64 + 1, "LIVE", serde_json::json!({"event":"TRADE_OBSERVATION","trade_id":obs.final_sequence,"lane":"PRIMARY","record_sha256":obs.record_sha256,"observation_sha256":obs.observation_sha256})).unwrap();
+        }
+        for (index, obs) in materialize_binding_observations(&binding)
+            .unwrap()
+            .iter()
+            .enumerate()
+        {
+            seed.append(index as u64 + 3, "LIVE", serde_json::json!({"event":"DEPTH_OBSERVATION","lane":"PRIMARY","first_sequence":obs.first_sequence,"final_sequence":obs.final_sequence,"record_sha256":obs.record_sha256,"observation_sha256":obs.observation_sha256})).unwrap();
+        }
+        seed.append(5, "LIVE", serde_json::json!({"event":"ARBITRATION_TERMINAL","status":"COMPLETE","trades":2,"depth_frames":2,"gaps":0,"late_corrections":0})).unwrap();
+        drop(seed);
+        let journal = journals.join("BTCUSDT-seg-0001.jsonl");
+        let args = vec![
+            "live_arbitration".to_owned(),
+            "BTCUSDT".to_owned(),
+            live.to_string_lossy().into_owned(),
+            journal.to_string_lossy().into_owned(),
+            "1".to_owned(),
+            "--identity".to_owned(),
+            root.join("identity.bin").to_string_lossy().into_owned(),
+            "--resume-dir".to_owned(),
+            journals.to_string_lossy().into_owned(),
+            "--prior-artifact".to_owned(),
+            prior.to_string_lossy().into_owned(),
+        ];
+        run_with_args(args.into_iter()).unwrap();
+        let rows: Vec<serde_json::Value> = fs::read_to_string(journal)
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        let unknown: Vec<_> = rows
+            .iter()
+            .filter_map(|row| {
+                let payload = &row["body"]["payload"];
+                (payload["event"] == "TRADE_LATE_CORRECTION" && payload["kind"] == "unknown")
+                    .then(|| payload["trade_id"].as_u64().unwrap())
+            })
+            .collect();
+        assert_eq!(
+            unknown,
+            vec![150],
+            "startup floor100 cannot silently suppress an unknown ID150 below resume cursor450"
+        );
+        assert!(rows.iter().any(
+            |row| row["body"]["payload"]["event"] == "ARBITRATION_RESUMED"
+                && row["body"]["payload"]["trade_floor"] == 450
+        ));
+        let next = journals.join("BTCUSDT-seg-0002.jsonl");
+        let args = vec![
+            "live_arbitration".to_owned(),
+            "BTCUSDT".to_owned(),
+            live.to_string_lossy().into_owned(),
+            next.to_string_lossy().into_owned(),
+            "1".to_owned(),
+            "--identity".to_owned(),
+            root.join("identity.bin").to_string_lossy().into_owned(),
+            "--resume-dir".to_owned(),
+            journals.to_string_lossy().into_owned(),
+            "--prior-artifact".to_owned(),
+            prior.to_string_lossy().into_owned(),
+        ];
+        run_with_args(args.into_iter()).unwrap();
+        let rows: Vec<serde_json::Value> = fs::read_to_string(next)
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        let repeated: Vec<_> = rows
+            .iter()
+            .filter(|row| {
+                row["body"]["payload"]["event"] == "TRADE_LATE_CORRECTION"
+                    && row["body"]["payload"]["trade_id"] == 150
+            })
+            .collect();
+        assert_eq!(
+            repeated.len(),
+            1,
+            "only the lane not already stored as a duplicate is new evidence"
+        );
+        assert!(
+            repeated
+                .iter()
+                .all(|row| row["body"]["payload"]["kind"] == "duplicate"),
+            "recovery must restore correction identity, not emit UNKNOWN again"
+        );
+        let third = journals.join("BTCUSDT-seg-0003.jsonl");
+        let args = vec![
+            "live_arbitration".to_owned(),
+            "BTCUSDT".to_owned(),
+            live.to_string_lossy().into_owned(),
+            third.to_string_lossy().into_owned(),
+            "1".to_owned(),
+            "--identity".to_owned(),
+            root.join("identity.bin").to_string_lossy().into_owned(),
+            "--resume-dir".to_owned(),
+            journals.to_string_lossy().into_owned(),
+            "--prior-artifact".to_owned(),
+            prior.to_string_lossy().into_owned(),
+        ];
+        run_with_args(args.into_iter()).unwrap();
+        let rows: Vec<serde_json::Value> = fs::read_to_string(third)
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        assert!(
+            rows.iter().all(|row| {
+                let payload = &row["body"]["payload"];
+                !(payload["event"] == "TRADE_LATE_CORRECTION" && payload["trade_id"] == 150)
+            }),
+            "a later resume must not append the same duplicate correction again"
+        );
+    }
+
+    fn regression_smoke03_sealed_stop_fixture(renew_shadow: bool) {
+        let root = regression_20260922_fixture_dir("smoke03-sealed-stop-");
+        let live = root.join("live");
+        regression_20260922_generation(&live, "p", 2000, &[101, 111], true);
+        regression_20260922_generation(
+            &live,
+            "s",
+            2000,
+            if renew_shadow {
+                &[101, 111]
+            } else {
+                &[101, 111, 150]
+            },
+            true,
+        );
+        let (journals, identity, output) = regression_20260922_seed_resume(&root);
+        let args = vec![
+            "live_arbitration".to_owned(),
+            "BTCUSDT".to_owned(),
+            live.to_string_lossy().into_owned(),
+            output.to_string_lossy().into_owned(),
+            "1".to_owned(),
+            "--identity".to_owned(),
+            identity.to_string_lossy().into_owned(),
+            "--resume-dir".to_owned(),
+            journals.to_string_lossy().into_owned(),
+        ];
+        let started = Instant::now();
+        let child = std::thread::spawn(move || run_with_args(args.into_iter()));
+        if renew_shadow {
+            let deadline = Instant::now() + Duration::from_secs(2);
+            while !regression_20260922_ids_if_complete(&output).contains(&111)
+                && Instant::now() < deadline
+            {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            assert!(
+                regression_20260922_ids_if_complete(&output).contains(&111),
+                "initial lane binding must precede successor creation"
+            );
+            regression_20260922_generation(&live, "s", 3000, &[111, 150], true);
+        }
+        let result = child.join().unwrap();
+        assert!(
+            result.is_ok(),
+            "sealed unequal lane heads must release final union before pending check: {result:?}"
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "sealed drain must not wait for lag/timeout policy"
+        );
+        assert_eq!(
+            regression_20260922_ids_if_complete(&output),
+            vec![101, 111, 150]
+        );
+        let rows: Vec<serde_json::Value> = fs::read_to_string(output)
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        assert_eq!(
+            rows.last().unwrap()["body"]["payload"]["completion_scope"],
+            "SEALED_DRAIN"
+        );
+    }
+
+    #[test]
+    fn regression_smoke03_unequal_sealed_heads_release_final_union() {
+        regression_smoke03_sealed_stop_fixture(false);
+    }
+
+    #[test]
+    fn regression_smoke03_nonserving_sealed_candidate_does_not_hold_stop() {
+        regression_smoke03_sealed_stop_fixture(true);
+    }
+
+    #[test]
+    fn regression_smoke03_closure_requires_latest_consumed_seal() {
+        let root = regression_20260922_fixture_dir("smoke03-seal-proof-");
+        let (generation, _, _) =
+            regression_20260922_generation(&root, "p", 2000, &[101, 111], true);
+        let campaign = generation.parent().unwrap().parent().unwrap();
+        let mut binding = LaneBinding::bind_generation(campaign, &generation).unwrap();
+        assert!(
+            !lane_trade_drain_complete(&binding, None, &[], Some(&generation)).unwrap(),
+            "loaded but not observed trades are pending"
+        );
+        binding.trade_consumed = binding.trade.records().len();
+        assert!(lane_trade_drain_complete(&binding, None, &[], Some(&generation)).unwrap());
+        let (successor, _, _) = regression_20260922_generation(&root, "p", 3000, &[150], true);
+        assert!(
+            !lane_trade_drain_complete(&binding, None, &[], Some(&successor)).unwrap(),
+            "a newer unbound origin is pending"
+        );
+        let mut candidate = LaneBinding::bind_generation(campaign, &successor).unwrap();
+        assert!(
+            !lane_trade_drain_complete(&binding, Some(&candidate), &[], Some(&successor)).unwrap(),
+            "candidate records must be observed too"
+        );
+        candidate.trade_consumed = candidate.trade.records().len();
+        assert!(
+            lane_trade_drain_complete(&binding, Some(&candidate), &[], Some(&successor)).unwrap()
+        );
+        fs::write(
+            successor.join("generation.json"),
+            br#"{"schema":"RawGenerationManifestV1","status":"RUNNING","failure":null}"#,
+        )
+        .unwrap();
+        assert!(
+            !lane_trade_drain_complete(&binding, Some(&candidate), &[], Some(&successor)).unwrap(),
+            "sealed segments without generation terminal never prove closure"
+        );
+    }
+
+    #[test]
+    fn regression_smoke03_missing_explicit_prior_is_rejected_before_output() {
+        let root = regression_20260922_fixture_dir("smoke03-missing-prior-");
+        let live = root.join("live");
+        for lane in ["p", "s"] {
+            regression_20260922_generation(&live, lane, 2000, &[101, 111], true);
+        }
+        let (journals, identity, output) = regression_20260922_seed_resume(&root);
+        let missing = root.join("absent-explicit-prior");
+        let args = vec![
+            "live_arbitration".to_owned(),
+            "BTCUSDT".to_owned(),
+            live.to_string_lossy().into_owned(),
+            output.to_string_lossy().into_owned(),
+            "1".to_owned(),
+            "--identity".to_owned(),
+            identity.to_string_lossy().into_owned(),
+            "--resume-dir".to_owned(),
+            journals.to_string_lossy().into_owned(),
+            "--prior-artifact".to_owned(),
+            missing.to_string_lossy().into_owned(),
+        ];
+        let result = run_with_args(args.into_iter());
+        assert!(
+            result.as_ref().is_err_and(
+                |reason| reason.contains("--prior-artifact is not an existing directory")
+            ),
+            "an explicitly requested missing origin must not disappear silently: {result:?}"
+        );
+        assert!(
+            !output.exists(),
+            "invalid inventory must be rejected before canonical output"
+        );
+    }
+
+    fn regression_p1_restart_fixture(tail: &[u8], reject: bool) {
+        use std::io::Write;
+        let root = regression_20260922_fixture_dir("p1-torn-restarts-");
+        let live = root.join("live");
+        let (generation, _, _) =
+            regression_20260922_generation(&live, "p", 2000, &[300, 450, 600], true);
+        regression_20260922_generation(&live, "s", 2000, &[300, 450, 600], true);
+        let binding = LaneBinding::bind_generation(
+            generation.parent().unwrap().parent().unwrap(),
+            &generation,
+        )
+        .unwrap();
+        let depth = materialize_binding_observations(&binding).unwrap();
+        let trade = materialize_trade_record(&binding.trade.records()[0]).unwrap();
+        let journals = root.join("journals");
+        let first = journals.join("BTCUSDT-seg-0000.jsonl");
+        let mut seed = LiveArbitrationJournalWriter::create(&first).unwrap();
+        seed.append(
+            0,
+            "LIVE",
+            serde_json::json!({"event":"ARBITRATION_STARTED","symbol":"BTCUSDT","trade_floor":100}),
+        )
+        .unwrap();
+        seed.append(1,"LIVE",serde_json::json!({"event":"TRADE_OBSERVATION","trade_id":300,"lane":"PRIMARY","record_sha256":trade.record_sha256,"observation_sha256":trade.observation_sha256})).unwrap();
+        for (index, obs) in depth.iter().enumerate() {
+            seed.append(index as u64+2,"LIVE",serde_json::json!({"event":"DEPTH_OBSERVATION","lane":"PRIMARY","first_sequence":obs.first_sequence,"final_sequence":obs.final_sequence,"record_sha256":obs.record_sha256,"observation_sha256":obs.observation_sha256})).unwrap();
+        }
+        drop(seed);
+        fs::OpenOptions::new()
+            .append(true)
+            .open(&first)
+            .unwrap()
+            .write_all(tail)
+            .unwrap();
+        let identity = root.join("identity.bin");
+        for index in 1..=2 {
+            let output = journals.join(format!("BTCUSDT-seg-{index:04}.jsonl"));
+            let args = vec![
+                "live_arbitration".to_owned(),
+                "BTCUSDT".to_owned(),
+                live.to_string_lossy().into_owned(),
+                output.to_string_lossy().into_owned(),
+                "1".to_owned(),
+                "--identity".to_owned(),
+                identity.to_string_lossy().into_owned(),
+                "--resume-dir".to_owned(),
+                journals.to_string_lossy().into_owned(),
+            ];
+            let result = run_with_args(args.into_iter());
+            if reject {
+                assert!(
+                    result.is_err(),
+                    "newline-terminated corrupt record must fail closed"
+                );
+                return;
+            }
+            assert!(
+                result.is_ok(),
+                "restart{index} must recover exact complete prefix despite torn bytes: {result:?}"
+            );
+            let rows: Vec<serde_json::Value> = fs::read_to_string(&output)
+                .unwrap()
+                .lines()
+                .map(|line| serde_json::from_str(line).unwrap())
+                .collect();
+            assert_eq!(
+                rows[0]["body"]["payload"]["previous_tail_bytes"]
+                    .as_u64()
+                    .unwrap_or(0),
+                if index == 1 { tail.len() as u64 } else { 3 }
+            );
+            assert!(
+                !rows
+                    .iter()
+                    .any(|row| row["body"]["payload"]["event"] == "DEPTH_OBSERVATION"),
+                "fixture continuation must exercise inherited depth without fresh depth records"
+            );
+            let next = journals.join(format!("BTCUSDT-seg-{:04}.jsonl", index + 1));
+            let recovered = recover_arbitration_state_opt(&journals, &identity, &next)
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                recovered.canonical_position.final_sequence,
+                Some(105),
+                "depth state belongs to the entire chain, not only its last file"
+            );
+            assert_eq!(
+                recovered.canonical_position.digest.as_ref(),
+                Some(&depth[1].observation_sha256)
+            );
+            if index == 1 {
+                // Retain the real main output's complete prefix, simulating
+                // interruption immediately before its terminal was written.
+                let bytes = fs::read(&output).unwrap();
+                let terminal_start = bytes[..bytes.len() - 1]
+                    .iter()
+                    .rposition(|byte| *byte == b'\n')
+                    .unwrap()
+                    + 1;
+                let mut interrupted = bytes[..terminal_start].to_vec();
+                interrupted.extend_from_slice(&[0xf0, 0x9f, 0x92]);
+                fs::write(&output, interrupted).unwrap();
+            }
+        }
+    }
+
+    #[test]
+    fn regression_p1_ascii_torn_survives_two_real_restarts() {
+        regression_p1_restart_fixture(b"{\"unfinished\":", false);
+    }
+    #[test]
+    fn regression_p1_utf8_torn_survives_two_real_restarts() {
+        regression_p1_restart_fixture(&[0xf0, 0x9f, 0x92], false);
+    }
+    #[test]
+    fn regression_p1_depth_cursor_survives_segment_without_depth() {
+        regression_p1_restart_fixture(b"", false);
+    }
+    #[test]
+    fn regression_p1_newline_terminated_corruption_is_rejected() {
+        regression_p1_restart_fixture(b"{bad}\n", true);
+        regression_p1_restart_fixture(&[0xf0, 0x9f, 0x92, b'\n'], true);
+    }
 
     /// ADR-17 B3 regression (full-gate defect hr-04e9f268cc0c): the last
     /// journal segment legitimately carried NO trade records (RESUMED + GAP
@@ -3563,6 +5287,77 @@ mod tests {
             Some(floor),
             "the trade floor must survive a trade-less final segment"
         );
+    }
+
+    #[test]
+    fn duplicate_correction_already_in_the_journal_is_not_new() {
+        let mut known = BTreeSet::new();
+        assert!(duplicate_correction_is_new(
+            &mut known, 7, "PRIMARY", "abc"
+        ));
+        assert!(!duplicate_correction_is_new(
+            &mut known, 7, "PRIMARY", "abc"
+        ));
+        assert!(duplicate_correction_is_new(&mut known, 7, "SHADOW", "abc"));
+    }
+
+    #[test]
+    fn recovery_remembers_journaled_duplicate_corrections() {
+        let dir = tempfile::tempdir().unwrap();
+        let segment = dir.path().join("BTCUSDT-seg-0000.jsonl");
+        let next = dir.path().join("BTCUSDT-seg-0001.jsonl");
+        let identity = dir.path().join("trade-identity.log");
+        let digest = "b".repeat(64);
+        {
+            let mut writer = LiveArbitrationJournalWriter::create(&segment).unwrap();
+            writer
+                .append(
+                    1,
+                    "LIVE",
+                    serde_json::json!({"event":"ARBITRATION_STARTED","symbol":"BTCUSDT","trade_floor":0}),
+                )
+                .unwrap();
+            writer
+                .append(
+                    2,
+                    "LIVE",
+                    serde_json::json!({
+                        "event":"TRADE_OBSERVATION","trade_id":40,"lane":"PRIMARY",
+                        "record_sha256":"a".repeat(64),"observation_sha256":digest
+                    }),
+                )
+                .unwrap();
+            writer
+                .append(
+                    3,
+                    "LIVE",
+                    serde_json::json!({
+                        "event":"TRADE_LATE_CORRECTION","trade_id":40,"lane":"SHADOW",
+                        "kind":"duplicate","record_sha256":"c".repeat(64),
+                        "observation_sha256":digest
+                    }),
+                )
+                .unwrap();
+            writer
+                .append(
+                    4,
+                    "LIVE",
+                    serde_json::json!({
+                        "event":"ARBITRATION_TERMINAL","status":"COMPLETE",
+                        "trades":1,"depth_frames":0,"gaps":0,"late_corrections":1
+                    }),
+                )
+                .unwrap();
+        }
+        let recovered = recover_arbitration_state_opt(dir.path(), &identity, &next)
+            .unwrap()
+            .expect("recovery must find the previous chain");
+        assert!(recovered.journaled_duplicate_corrections.contains(&(
+            40,
+            "SHADOW".to_owned(),
+            digest
+        )));
+        assert_eq!(recovered.journaled_duplicate_corrections.len(), 1);
     }
 
     /// Fault-gate defect 2026-09-17 (closure run hrs-7c9c792ca38c): the
@@ -4005,6 +5800,8 @@ mod tests {
             generation: generation.clone(),
             binding: walker_binding,
             floor: 102,
+            last_durable_advance: Instant::now(),
+            lag_excluded: false,
         }];
         let journal_path = dir.path().join("journal.jsonl");
         let mut journal = LiveArbitrationJournalWriter::create(&journal_path).unwrap();
@@ -4275,6 +6072,8 @@ mod tests {
             generation: intermediate.clone(),
             binding: LaneBinding::bind_generation(&s_campaign, &intermediate).unwrap(),
             floor: 0,
+            last_durable_advance: Instant::now(),
+            lag_excluded: false,
         };
         let binding = LaneBinding::bind_generation(&s_campaign, &predecessor).unwrap();
         let mut tails = vec![empty_walker];
@@ -4340,6 +6139,7 @@ mod tests {
             &mut trades_published,
             &mut late_corrections,
             0,
+            None,
         )
         .unwrap();
         match union.flush().unwrap() {
@@ -4545,6 +6345,7 @@ mod tests {
             &mut trades_published,
             &mut late_corrections,
             floor,
+            None,
         )
         .unwrap();
         let mut shadow_tails: Vec<GenerationTailWalker> = Vec::new();
