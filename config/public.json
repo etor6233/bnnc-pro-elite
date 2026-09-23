@@ -1,0 +1,16 @@
+{
+  "schema_version": "1",
+  "environment": "production-public-market-data",
+  "venue": "binance-spot",
+  "symbols": ["BTCUSDT", "ETHUSDT"],
+  "json": {
+    "websocket_base": "wss://data-stream.binance.vision:443",
+    "rest_base": "https://data-api.binance.vision",
+    "depth_interval": "100ms",
+    "time_unit": "MICROSECOND",
+    "streams": ["depth", "trade"]
+  },
+  "credentials": "FORBIDDEN",
+  "order_entry": "ABSENT",
+  "spec_revision": "976cc580553890e92031b77306147c0ed1de5a46"
+}
