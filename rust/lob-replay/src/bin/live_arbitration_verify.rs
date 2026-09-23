@@ -409,7 +409,8 @@ struct RawTradeEvidence {
 /// between two raw records of the same ID is itself a typed error: the raw
 /// is the authority and the canonical must match it.
 fn hash_file_into(digest: &mut Sha256, path: &Path) -> Result<()> {
-    let mut file = fs::File::open(path).map_err(|error| format!("hash {}: {error}", path.display()))?;
+    let mut file =
+        fs::File::open(path).map_err(|error| format!("hash {}: {error}", path.display()))?;
     let mut buffer = [0_u8; 65536];
     loop {
         let count = file
@@ -476,8 +477,8 @@ fn write_oracle_cache(cache_dir: &Path, kind: &str, key: &str, value: &Value) ->
     let target = directory.join(format!("{key}.json"));
     let temporary = directory.join(format!("{key}.json.tmp"));
     let encoded = serde_json::json!({"key": key, "rows": value});
-    let bytes = serde_json::to_vec(&encoded)
-        .map_err(|error| format!("encode oracle cache: {error}"))?;
+    let bytes =
+        serde_json::to_vec(&encoded).map_err(|error| format!("encode oracle cache: {error}"))?;
     fs::write(&temporary, bytes)
         .map_err(|error| format!("write {}: {error}", temporary.display()))?;
     if target.is_file() {
@@ -528,7 +529,8 @@ fn oracle_trades_union(
                                 valid = false;
                                 break;
                             };
-                            let Some(observation_sha256) = row["observation_sha256"].as_str() else {
+                            let Some(observation_sha256) = row["observation_sha256"].as_str()
+                            else {
                                 valid = false;
                                 break;
                             };
@@ -538,11 +540,7 @@ fn oracle_trades_union(
                                 observation_sha256.to_owned(),
                             ));
                         }
-                        if valid {
-                            Some(parsed)
-                        } else {
-                            None
-                        }
+                        if valid { Some(parsed) } else { None }
                     } else {
                         None
                     };
@@ -770,19 +768,14 @@ fn oracle_depth_by_lane(
                             };
                             parsed.push((first, final_sequence, digest.to_owned()));
                         }
-                        if valid {
-                            Some(parsed)
-                        } else {
-                            None
-                        }
+                        if valid { Some(parsed) } else { None }
                     } else {
                         None
                     };
                     let observations = if let Some(observations) = observations {
                         observations
                     } else {
-                        let built =
-                            trusted_depth_observations(&generation, tolerate_missing_ack)?;
+                        let built = trusted_depth_observations(&generation, tolerate_missing_ack)?;
                         if let (Some(dir), Some(key)) = (cache_dir, key.as_deref()) {
                             let encoded = Value::Array(
                                 built
@@ -1278,6 +1271,7 @@ struct OracleVerification {
     terminal_completion_scope: Option<String>,
 }
 
+#[allow(clippy::too_many_arguments)]
 fn verify_with_oracle(
     journals: &[PathBuf],
     oracle_artifact: Option<&Path>,

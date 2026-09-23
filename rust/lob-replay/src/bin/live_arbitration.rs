@@ -3869,9 +3869,10 @@ fn run_with_tail_lag_horizon(
                     let expected = canonical_position
                         .final_sequence
                         .map(|sequence| sequence.saturating_add(1));
-                    let front_continues = binding.pending_depth.front().is_some_and(|observation| {
-                        expected.is_some_and(|expected| observation.first_sequence == expected)
-                    });
+                    let front_continues =
+                        binding.pending_depth.front().is_some_and(|observation| {
+                            expected.is_some_and(|expected| observation.first_sequence == expected)
+                        });
                     let ready = generation_terminal_complete(&binding.generation_dir)?
                         && binding_streams_sealed(binding)?
                         && binding.depth_consumed == binding.depth.records().len()
@@ -5292,9 +5293,7 @@ mod tests {
     #[test]
     fn duplicate_correction_already_in_the_journal_is_not_new() {
         let mut known = BTreeSet::new();
-        assert!(duplicate_correction_is_new(
-            &mut known, 7, "PRIMARY", "abc"
-        ));
+        assert!(duplicate_correction_is_new(&mut known, 7, "PRIMARY", "abc"));
         assert!(!duplicate_correction_is_new(
             &mut known, 7, "PRIMARY", "abc"
         ));
