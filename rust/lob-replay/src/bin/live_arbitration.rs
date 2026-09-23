@@ -3857,9 +3857,11 @@ fn run_with_tail_lag_horizon(
                 // candidate. The live path only types that gap when it
                 // activates a candidate, so the pending queue never empties
                 // and the stop fails closed on evidence it already holds.
-                // A frame that continues the cursor is the normal tail: the
-                // next iteration publishes it. Typing a gap there rewrites a
-                // contiguous drain.
+                // A frame that continues the cursor is the normal tail.
+                // Publish it in this drain. Waiting for the next poll turns
+                // every quota into a quarter-second sleep, and a long sealed
+                // tail then misses the cooperative deadline. Typing a gap
+                // over that tail rewrites a contiguous drain.
                 if !stop_gap_bootstrapped {
                     let binding = if serving_lane == CaptureLane::Primary {
                         &mut primary_binding
@@ -3873,6 +3875,17 @@ fn run_with_tail_lag_horizon(
                         binding.pending_depth.front().is_some_and(|observation| {
                             expected.is_some_and(|expected| observation.first_sequence == expected)
                         });
+                    if front_continues {
+                        publish_pending_depth(
+                            &mut journal,
+                            &origin,
+                            serving_lane,
+                            binding,
+                            &mut canonical_position,
+                            &mut depth_published,
+                        )?;
+                        continue;
+                    }
                     let ready = generation_terminal_complete(&binding.generation_dir)?
                         && binding_streams_sealed(binding)?
                         && binding.depth_consumed == binding.depth.records().len()
@@ -4327,19 +4340,24 @@ mod tests {
         let mut journal =
             LiveArbitrationJournalWriter::create(&root.join("frontier.jsonl")).unwrap();
         let mut published = 0;
-        let result = publish_pending_depth(
-            &mut journal,
-            &Instant::now(),
-            CaptureLane::Primary,
-            &mut binding,
-            &mut canonical,
-            &mut published,
-        )
-        .unwrap();
-        assert!(
-            matches!(result, DepthPublishOutcome::Published(2)),
-            "second contiguous frame must not be classified as a gap"
-        );
+        while !binding.pending_depth.is_empty() {
+            match publish_pending_depth(
+                &mut journal,
+                &Instant::now(),
+                CaptureLane::Primary,
+                &mut binding,
+                &mut canonical,
+                &mut published,
+            )
+            .unwrap()
+            {
+                DepthPublishOutcome::Published(0) => break,
+                DepthPublishOutcome::Published(_) => {}
+                DepthPublishOutcome::GapDetected { .. } => {
+                    panic!("second contiguous frame must not be classified as a gap")
+                }
+            }
+        }
         assert_eq!(canonical.final_sequence, Some(105));
         assert_eq!(published, 2);
     }
